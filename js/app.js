@@ -1,6 +1,7 @@
 import { CONFIG } from './config.js';
 import { callApi, callApiPost } from './api.js';
 import { toast, btnBusy, h, formatDateISO, formatDateLongID, formatDateDMYID, isoToDMY, dmyToISO, todayDMY } from './ui.js';
+import { offlineInit, cacheReplace, cacheGetAll, cacheGetAllRaw, cacheUpsert, cacheDelete, cacheMeta, outboxList, outboxRemove, callOrQueue } from './offline.js';
 
 const $app = document.getElementById('app');
 
@@ -75,7 +76,10 @@ function navChip(it) {
 }
 
 function buildNav(role) {
-  const common = [{ key:'dashboard', label:'Dashboard', icon:'📊' }];
+  const common = [
+    { key:'dashboard', label:'Dashboard', icon:'📊' },
+    { key:'sync', label:'Sinkronisasi', icon:'🔄' },
+  ];
   const admin = [
     { key:'programs', label:'Program', icon:'🗂️' },
     { key:'candidates', label:'Calon', icon:'🧾' },
@@ -130,6 +134,30 @@ function currentProgramId_() {
   return String(state.programContextId||'').trim();
 }
 
+// ======================
+// OFFLINE HELPERS
+// ======================
+async function offlineList_(store, fetchFn, filter = {}) {
+  // 1) tampilkan cache dulu (kalau ada)
+  const cached = await cacheGetAll(store, filter);
+  let meta = await cacheMeta(store);
+  // 2) coba refresh dari server; kalau gagal, pakai cache
+  try {
+    const r = await fetchFn();
+    if (r && r.ok) {
+      // caller will pass normalized rows
+      return { ok:true, from:'server', data: r, cached, meta };
+    }
+    return { ok:false, from:'server', data: r, cached, meta };
+  } catch (e) {
+    return { ok:true, from:'cache', data: { ok:true }, cached, meta, offline_error: String(e && e.message ? e.message : e) };
+  }
+}
+
+function normalizeRows_(rows, idKey) {
+  return (rows || []).map(x => ({ id: String(x[idKey] || ''), data: x }));
+}
+
 async function boot() {
   applyThemeFromStorage();
   const token = localStorage.getItem(CONFIG.TOKEN_KEY) || '';
@@ -139,6 +167,7 @@ async function boot() {
     const me = await callApi('me', {});
     if (!me.ok) throw new Error(me.error || 'Session invalid');
     state.user = me.user;
+    await offlineInit();
     await preload();
     renderApp('dashboard');
   } catch (e) {
@@ -329,6 +358,7 @@ async function go(key) {
   state.viewKey = key;
 
   if (key === 'dashboard') return renderDashboard();
+  if (key === 'sync') return renderSync();
   if (key === 'programs') return renderPrograms();
   if (key === 'candidates') return renderCandidates();
   if (key === 'selection') return renderSelection();
@@ -351,6 +381,84 @@ function card(children) {
   return h('div', { class:'rounded-3xl border border-slate-200 dark:border-slate-800 bg-white/70 dark:bg-slate-950/50 backdrop-blur shadow-sm p-5' }, children);
 }
 
+// ======================
+// MODAL HELPER (mobile friendly)
+// ======================
+function openModal_(opts = {}) {
+  const {
+    title = '',
+    subtitle = 'Klik di luar untuk menutup',
+    maxWidth = 'max-w-3xl',
+    onClose = null,
+    headerRight = null, // node (optional)
+  } = opts;
+
+  // lock background scroll
+  const prevOverflow = document.body.style.overflow;
+  document.body.style.overflow = 'hidden';
+
+  const close = () => {
+    try { overlay.remove(); } catch(e) {}
+    document.body.style.overflow = prevOverflow || '';
+    if (typeof onClose === 'function') onClose();
+  };
+
+  const overlay = h('div', {
+    class: 'modal-overlay fixed inset-0 z-50 bg-black/40 overflow-y-auto'
+  }, []);
+
+  const wrap = h('div', {
+    class: 'min-h-full flex items-start justify-center p-0 sm:p-4'
+  }, []);
+
+  const modal = h('div', {
+    class:
+      `w-full ${maxWidth} ` +
+      `rounded-3xl border border-slate-200 dark:border-slate-800 ` +
+      `bg-white/85 dark:bg-slate-950/70 backdrop-blur shadow-sm ` +
+      `flex flex-col overflow-hidden ` +
+      `max-h-[92vh] sm:max-h-[90vh] my-0 sm:my-6`
+  }, []);
+
+  const header = h('div', {
+    class:
+      'sticky top-0 z-10 ' +
+      'bg-white/95 dark:bg-slate-950/90 backdrop-blur ' +
+      'border-b border-slate-200 dark:border-slate-800 ' +
+      'px-5 py-4'
+  }, [
+    h('div', { class: 'flex items-start justify-between gap-3' }, [
+      h('div', {}, [
+        h('div', { class: 'text-lg font-semibold leading-tight' }, title),
+        subtitle ? h('div', { class: 'text-xs text-slate-500 dark:text-slate-400 mt-1' }, subtitle) : null,
+      ]),
+      h('div', { class: 'shrink-0 flex items-center gap-2' }, [
+        headerRight || null,
+        h('button', {
+          class: 'rounded-xl px-3 py-2 text-sm border border-slate-200 dark:border-slate-800 hover:bg-slate-50 dark:hover:bg-slate-900',
+          onclick: close
+        }, 'Tutup')
+      ])
+    ])
+  ]);
+
+  const body = h('div', {
+    class: 'modal-scroll px-5 py-4 overflow-y-auto'
+  }, []);
+
+  modal.appendChild(header);
+  modal.appendChild(body);
+
+  wrap.appendChild(modal);
+  overlay.appendChild(wrap);
+
+  overlay.addEventListener('click', (e) => { if (e.target === overlay) close(); });
+
+  document.body.appendChild(overlay);
+
+  return { overlay, modal, body, close };
+}
+
 function table(headers, rows) {
   return h('div', { class:'overflow-auto rounded-2xl border border-slate-200 dark:border-slate-800' }, [
     h('table', { class:'min-w-full text-sm' }, [
@@ -360,6 +468,182 @@ function table(headers, rows) {
       h('tbody', { class:'divide-y divide-slate-200 dark:divide-slate-800' }, rows.map(r => h('tr', { class:'hover:bg-slate-50 dark:hover:bg-slate-900/40' }, r.map(td => h('td', { class:'px-4 py-3 whitespace-nowrap' }, td)))))
     ])
   ]);
+}
+
+// ======================
+// SRC BADGE + LOCAL-FIRST MERGE HELPERS
+// ======================
+function srcBadge_(src, pending=false) {
+  const s = String(src || '').toUpperCase() || 'NA';
+  const base = 'inline-flex items-center gap-1 px-2.5 py-1 rounded-full text-[11px] border whitespace-nowrap';
+  const dot = h('span',{class:'inline-block w-1.5 h-1.5 rounded-full bg-slate-400'},'');
+  const label = pending ? `${s}*` : s;
+
+  const cls =
+    s === 'SERVER' ? 'bg-emerald-50 border-emerald-200 text-emerald-800 dark:bg-emerald-950/30 dark:border-emerald-900 dark:text-emerald-200' :
+    s === 'CACHE'  ? 'bg-slate-50 border-slate-200 text-slate-700 dark:bg-slate-900/40 dark:border-slate-800 dark:text-slate-200' :
+    s === 'LOCAL'  ? 'bg-amber-50 border-amber-200 text-amber-800 dark:bg-amber-950/30 dark:border-amber-900 dark:text-amber-200' :
+                     'bg-slate-50 border-slate-200 text-slate-600 dark:bg-slate-900/40 dark:border-slate-800 dark:text-slate-300';
+
+  // warna titik kecil mengikuti src
+  if (s === 'SERVER') dot.className = 'inline-block w-1.5 h-1.5 rounded-full bg-emerald-500';
+  if (s === 'CACHE')  dot.className = 'inline-block w-1.5 h-1.5 rounded-full bg-slate-400';
+  if (s === 'LOCAL')  dot.className = 'inline-block w-1.5 h-1.5 rounded-full bg-amber-500';
+
+  return h('span', { class: `${base} ${cls}`, title: pending ? 'Perubahan lokal belum terkirim (outbox)' : '' }, [
+    dot,
+    h('span', {}, label)
+  ]);
+}
+
+function rowSrc_(row, fallback='SERVER') {
+  if (!row) return fallback;
+  if (row.__local_pending) return 'LOCAL';
+  if (row.__src) return String(row.__src).toUpperCase();
+  return fallback;
+}
+
+// merge cache + server: server menang, tapi keep LOCAL (pending) supaya tidak hilang
+function mergeLocalFirst_(cachedRows, serverRows, idKey) {
+  const map = new Map();
+
+  // cache dulu
+  (cachedRows || []).forEach(r=>{
+    const id = String(r?.[idKey] || r?.id || '');
+    if (!id) return;
+    const rr = Object.assign({}, r);
+    rr.__src = rr.__local_pending ? 'LOCAL' : (rr.__src || 'CACHE');
+    map.set(id, rr);
+  });
+
+  // server override (kecuali jika cache itu LOCAL pending dan server belum punya update)
+  (serverRows || []).forEach(r=>{
+    const id = String(r?.[idKey] || r?.id || '');
+    if (!id) return;
+    const existing = map.get(id);
+    if (existing && existing.__local_pending) {
+      // tetap tampilkan versi lokal pending di atas data server
+      // tapi simpan server snapshot jika diperlukan (opsional)
+      existing.__server_shadow = r;
+      existing.__src = 'LOCAL';
+      map.set(id, existing);
+    } else {
+      const rr = Object.assign({}, r, { __src:'SERVER', __local_pending:false });
+      map.set(id, rr);
+    }
+  });
+
+  return Array.from(map.values());
+}
+
+async function localFirstList_(store, fetchFn, filter, idKey, serverPickKey=null, mapRow=null, cacheIdFn=null) {
+  // 1) baca cache dulu
+  const cached = await cacheGetAll(store, filter || {});
+  const meta = await cacheMeta(store);
+
+  const cachedNorm = (cached || []).map(x=>{
+    const rr = Object.assign({}, x);
+    rr.__src = rr.__local_pending ? 'LOCAL' : (rr.__src || 'CACHE');
+    return rr;
+  });
+
+  // 2) fetch server
+  try{
+    const r = await fetchFn();
+    if (r && r.ok) {
+      const serverRows = serverPickKey
+        ? (r[serverPickKey] || [])
+        : (r.items || r.data || r.rows || []);
+
+      const serverNorm = (serverRows || []).map(row=>{
+        const base = Object.assign({}, row);
+        const rr = (typeof mapRow === 'function') ? mapRow(base) : base;
+        rr.__src = 'SERVER';
+        rr.__local_pending = false;
+        return rr;
+      });
+
+      const merged = mergeLocalFirst_(cachedNorm, serverNorm, idKey);
+
+      const toCache = merged.map(row => ({
+        id: String((typeof cacheIdFn === 'function')
+          ? cacheIdFn(row)
+          : (row[idKey] || row.id || '')
+        ),
+        data: Object.assign({}, row)
+      })).filter(x=>x.id);
+
+      await cacheReplace(store, toCache, filter || {});
+      return { ok:true, from:'server', meta, items: merged };
+    }
+    return { ok:true, from:'cache', meta, items: cachedNorm, error: r?.error || '' };
+  } catch(e){
+    return { ok:true, from:'cache', meta, items: cachedNorm, error: String(e?.message || e) };
+  }
+}
+
+
+// Local-first HYDRATE: render cache immediately, then refresh server in background (stale-while-revalidate).
+// onUpdate({items, from:'cache'|'server', meta, error, refreshing})
+function localFirstHydrateList_({ store, fetchFn, filter, idKey, serverPickKey=null, onUpdate, viewToken, mapRow=null, cacheIdFn=null }) {
+  (async ()=>{
+    const cached = await cacheGetAll(store, filter || {});
+    const meta0 = await cacheMeta(store);
+    const cachedNorm = (cached || []).map(x=>{
+      const rr = Object.assign({}, x);
+      rr.__src = rr.__local_pending ? 'LOCAL' : (rr.__src || 'CACHE');
+      return rr;
+    });
+    try{ onUpdate && onUpdate({ items: cachedNorm, from:'cache', meta: meta0, error:'', refreshing:true }); } catch {}
+
+    // Background refresh (do not block UI)
+    setTimeout(async ()=>{
+      try{
+        const r = await fetchFn();
+        if (!(r && r.ok)) {
+          const meta1 = await cacheMeta(store);
+          if (viewToken && viewToken() === false) return;
+          return onUpdate && onUpdate({ items: cachedNorm, from:'cache', meta: meta1||meta0, error: r?.error||'Gagal', refreshing:false });
+        }
+        const serverRows = serverPickKey ? (r[serverPickKey] || []) : (r.items || r.data || r.rows || []);
+        const merged = mergeLocalFirst_(cachedNorm, serverRows, idKey);
+        const toCache = merged.map(row => ({ id: String((cacheIdFn ? cacheIdFn(row) : (row[idKey] || row.id || ''))), data: Object.assign({}, row) }));
+        await cacheReplace(store, toCache, filter || {});
+        const meta2 = await cacheMeta(store);
+        if (viewToken && viewToken() === false) return;
+        onUpdate && onUpdate({ items: merged, from:'server', meta: meta2, error:'', refreshing:false });
+      } catch(e){
+        const meta1 = await cacheMeta(store);
+        if (viewToken && viewToken() === false) return;
+        onUpdate && onUpdate({ items: cachedNorm, from:'cache', meta: meta1||meta0, error: String(e?.message || e), refreshing:false });
+      }
+    }, 0);
+  })();
+}
+
+
+async function selectionCacheForProgram_(pid){
+  // selection rows di IndexedDB (legacy) tidak punya program_id.
+  // Kita filter dengan kandidat program (candidates cache).
+  let cand = [];
+  try { cand = await cacheGetAll('candidates', { program_id: pid }); } catch(e){}
+  const allow = new Set((cand||[]).map(x=>String(x.candidate_id||'')));
+
+  let raw = [];
+  try { raw = await cacheGetAllRaw('selection'); } catch(e){}
+  const items = (raw||[])
+    .map(r => (r && r.data) ? r.data : r)
+    .filter(x => allow.size ? allow.has(String(x.candidate_id||'')) : true)
+    .map(x => Object.assign({}, x, { __src: x.__local_pending ? 'LOCAL' : (x.__src || 'CACHE') }));
+  return { items, hasCandidateScope: allow.size>0 };
+}
+
+
+
+function cacheInfoLine_(store, meta, extraText='') {
+  const t = meta?.ts ? new Date(meta.ts).toLocaleString('id-ID') : '-';
+  const msg = `Cache ${store}: ${t}${extraText ? ' • ' + extraText : ''}`;
+  return h('div',{class:'mb-3 text-xs text-slate-500 dark:text-slate-400'}, msg);
 }
 
 async function renderDashboard() {
@@ -497,22 +781,17 @@ function renderCharts(chartData){
 }
 
 async function openDashboardDetail(type, title){
-  const overlay = h('div', { class:'fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/40' }, []);
-  const holder = h('div',{class:'mt-4'},[h('div',{class:'text-sm text-slate-500'},'Memuat...')]);
-  const modal = card([
-    h('div',{class:'flex items-start justify-between gap-2'},[
-      h('div',{},[
-        h('div',{class:'text-lg font-semibold'}, title),
-        h('div',{class:'text-xs text-slate-500 dark:text-slate-400 mt-1'},'Klik di luar untuk menutup')
-      ]),
-      h('button',{class:'rounded-xl px-3 py-2 text-sm border border-slate-200 dark:border-slate-800', onclick:()=>overlay.remove()},'Tutup')
-    ]),
-    holder
+  const holder = h('div',{class:'mt-1'},[
+    h('div',{class:'text-sm text-slate-500 dark:text-slate-400'},'Memuat...')
   ]);
-  modal.classList.add('w-full','max-w-4xl');
-  overlay.appendChild(modal);
-  overlay.addEventListener('click', (e)=>{ if(e.target===overlay) overlay.remove(); });
-  document.body.appendChild(overlay);
+
+  const { body } = openModal_({
+    title,
+    subtitle: 'Scroll konten di bawah. Klik di luar untuk menutup.',
+    maxWidth: 'max-w-4xl'
+  });
+
+  body.appendChild(holder);
 
   const r = await callApi('dashboardDetail', { type, program_id: currentProgramId_() || '' });
   if (!r.ok) {
@@ -520,11 +799,11 @@ async function openDashboardDetail(type, title){
     holder.appendChild(h('div',{class:'text-rose-600'}, r.error||'Gagal'));
     return;
   }
+
   const items = r.items || [];
   holder.innerHTML = '';
   if (!items.length) return holder.appendChild(h('div',{class:'text-slate-500'}, 'Tidak ada data'));
 
-  // simple table based on type
   if (type === 'alerts') {
     holder.appendChild(table(['NIK','Nama','Kategori'], items.map(x=>[x.nik||'-', x.name||'-', x.category||'-'])));
   } else if (type === 'candidates') {
@@ -538,10 +817,33 @@ async function openDashboardDetail(type, title){
   }
 }
 
-async function renderPrograms() {
+async function renderPrograms(opts={}) {
+  const skipBg = !!opts.skipBg;
   const v = setViewTitle('Program', 'Kelola batch Sekolah Pemanen');
-  const res = await callApi('listPrograms', {});
-  if (res.ok) { state.programs = res.programs || []; state.program = res.activeProgram || null; state.estates = res.estates || state.estates || []; }
+
+  // Local-first: render cache immediately (programs + master estates), refresh server in background.
+  const cachedPrograms = await cacheGetAll('programs', { estate: '' });
+  const cachedEstates  = await cacheGetAll('master_estates', { estate: '' });
+  if (cachedPrograms && cachedPrograms.length) state.programs = cachedPrograms;
+  if (cachedEstates && cachedEstates.length) state.estates = cachedEstates;
+
+  let res = { ok:false, programs: state.programs||[], estates: state.estates||[], activeProgram: state.program||null, historyPrograms: [] };
+
+  if (!skipBg) {
+    callApi('listPrograms', {}).then(async (srv)=>{
+      if (!(srv && srv.ok)) return;
+      state.programs = srv.programs || [];
+      state.program = srv.activeProgram || null;
+      state.estates = srv.estates || state.estates || [];
+      // cache snapshot for next open
+      try{
+        await cacheReplace('programs', normalizeRows_(state.programs, 'program_id'), { estate: '' });
+        await cacheReplace('master_estates', (state.estates||[]).map(x=>({ id:String(x.estate_code||''), data:x })), { estate: '' });
+      }catch(e){}
+      if (state.viewKey === 'programs') renderPrograms({ skipBg:true });
+    }).catch(()=>{});
+  }
+
   const top = h('div', { class:'flex flex-col md:flex-row md:items-center gap-3 mb-4' }, [
     h('div', { class:'text-sm text-slate-500 dark:text-slate-400' }, 'Pilih program aktif untuk operasional harian.'),
     h('div', { class:'md:ml-auto flex gap-2' }, [
@@ -671,28 +973,27 @@ async function renderPrograms() {
 }
 
 function openProgramModal() {
-  const v = document.getElementById('view');
-  const overlay = h('div', { class:'fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/40' }, []);
-  const modal = card([
-    h('div',{class:'text-lg font-semibold'},'Buat Program Baru'),
-    h('div',{class:'mt-4 grid md:grid-cols-2 gap-3'},[
-      field('Nama Program','name','Sekolah Pemanen - Batch 01'),
-      field('Lokasi','location','Estate / TC'),
-      field('Mulai (YYYY-MM-DD)','period_start', formatDateISO(new Date())),
-      field('Selesai (YYYY-MM-DD)','period_end', ''),
-      field('Kuota','quota','30'),
-    ]),
-    h('div',{class:'mt-5 flex justify-end gap-2'},[
-      h('button',{class:'rounded-2xl px-4 py-2 text-sm border border-slate-200 dark:border-slate-800', onclick:()=>overlay.remove()},'Batal'),
-      h('button',{id:'btnSaveProgram', class:'rounded-2xl px-4 py-2 text-sm bg-emerald-600 text-white hover:bg-emerald-700 flex items-center gap-2'},[
-        h('span',{'data-spinner':'', class:'hidden w-4 h-4 border-2 border-white/40 border-t-white rounded-full animate-spin'}),
-        h('span',{'data-label':'','data-orig':'Simpan'},'Simpan')
-      ])
+  const { body, close } = openModal_({
+    title: 'Buat Program Baru',
+    subtitle: 'Header tetap, isi form bisa di-scroll (mobile friendly).',
+    maxWidth: 'max-w-2xl'
+  });
+
+  body.appendChild(h('div',{class:'grid md:grid-cols-2 gap-3'},[
+    field('Nama Program','name','Sekolah Pemanen - Batch 01'),
+    field('Lokasi','location','Estate / TC'),
+    field('Mulai (YYYY-MM-DD)','period_start', formatDateISO(new Date())),
+    field('Selesai (YYYY-MM-DD)','period_end', ''),
+    field('Kuota','quota','30'),
+  ]));
+
+  body.appendChild(h('div',{class:'mt-5 flex justify-end gap-2'},[
+    h('button',{class:'rounded-2xl px-4 py-2 text-sm border border-slate-200 dark:border-slate-800', onclick: close},'Batal'),
+    h('button',{id:'btnSaveProgram', class:'rounded-2xl px-4 py-2 text-sm bg-emerald-600 text-white hover:bg-emerald-700 flex items-center gap-2'},[
+      h('span',{'data-spinner':'', class:'hidden w-4 h-4 border-2 border-white/40 border-t-white rounded-full animate-spin'}),
+      h('span',{'data-label':'','data-orig':'Simpan'},'Simpan')
     ])
-  ]);
-  modal.classList.add('w-full','max-w-2xl');
-  overlay.appendChild(modal);
-  document.body.appendChild(overlay);
+  ]));
 
   document.getElementById('btnSaveProgram').onclick = async ()=>{
     const btn = document.getElementById('btnSaveProgram');
@@ -708,7 +1009,7 @@ function openProgramModal() {
       const r = await callApi('createProgram', payload);
       if(!r.ok) throw new Error(r.error||'Gagal');
       toast('Program dibuat', 'ok');
-      overlay.remove();
+      close();
       await preload();
       renderPrograms();
     }catch(e){
@@ -737,32 +1038,60 @@ function selectField(label, id, options, value) {
 }
 
 
+
 async function renderCandidates() {
   const v = setViewTitle('Calon Pemanen', 'Administrasi & verifikasi berkas');
-  const res = await callApi('listCandidates', { program_id: currentProgramId_() });
-  if (res.ok) state.candidates = res.candidates || [];
+  const pid = currentProgramId_();
+
+  const info = h('div',{class:'mb-3 text-xs text-slate-500 dark:text-slate-400'},'Memuat dari cache...');
+  v.appendChild(info);
+
   const actions = h('div',{class:'flex gap-2 mb-4'},[
     h('button',{class:'rounded-2xl px-4 py-2 bg-emerald-600 text-white hover:bg-emerald-700 text-sm', onclick:()=>openCandidateModal()},'Tambah Calon'),
     h('button',{class:'rounded-2xl px-4 py-2 border border-slate-200 dark:border-slate-800 text-sm', onclick:()=>renderCandidates()},'Refresh'),
   ]);
   v.appendChild(actions);
 
-  const rows = state.candidates.map(c => ([
-    c.nik,
-    c.name,
-    `${(c.estate||'-').toUpperCase()} / ${c.divisi||'-'}`,
-    `${c.family_id||'-'} • ${c.relation||'-'}`,
-    badge(c.admin_status || 'SUBMITTED'),
-    c.applied_at ? formatDateDMYID(c.applied_at) : '-',
-    docsBadge_(c),
-    h('div',{class:'flex flex-wrap gap-2'},[
-      h('button',{class:'rounded-xl px-3 py-2 text-xs border border-slate-200 dark:border-slate-800', onclick:()=>openCandidateModal(c)},'Edit'),
-      h('button',{class:'rounded-xl px-3 py-2 text-xs bg-slate-900 text-white dark:bg-slate-100 dark:text-slate-900', onclick:()=>verifyCandidate(c,'VERIFIED')},'Verifikasi'),
-      h('button',{class:'rounded-xl px-3 py-2 text-xs bg-rose-600 text-white', onclick:()=>verifyCandidate(c,'REJECTED')},'Tolak'),
-    ])
-  ]));
-  v.appendChild(card([table(['NIK','Nama','Estate/Divisi','Keluarga','Status','Apply','Berkas','Aksi'], rows)]));
+  const host = h('div',{},[
+    card([ h('div',{class:'text-sm text-slate-500 dark:text-slate-400'},'Memuat...') ])
+  ]);
+  v.appendChild(host);
+
+  localFirstHydrateList_({
+    store: 'candidates',
+    fetchFn: () => callApi('listCandidates', { program_id: pid }),
+    filter: { program_id: pid },
+    idKey: 'candidate_id',
+    serverPickKey: 'candidates',
+    viewToken: ()=> state.viewKey === 'candidates',
+    onUpdate: ({ items, from, meta, error, refreshing })=>{
+      state.candidates = items || [];
+      info.textContent = `Cache Calon: ${meta?.ts ? new Date(meta.ts).toLocaleString('id-ID') : '-'} • ${refreshing ? 'refresh...' : (from==='server' ? 'SERVER refresh' : 'CACHE only')}${error ? (' • Offline: ' + error) : ''}`;
+
+      const rows = (state.candidates||[]).map(c => ([
+        srcBadge_(rowSrc_(c), !!c.__local_pending),
+        c.nik,
+        c.name,
+        `${(c.estate||'-').toUpperCase()} / ${c.divisi||'-'}`,
+        `${c.family_id||'-'} • ${c.relation||'-'}`,
+        badge(c.admin_status || 'SUBMITTED'),
+        c.applied_at ? formatDateDMYID(c.applied_at) : '-',
+        docsBadge_(c),
+        h('div',{class:'flex flex-wrap gap-2'},[
+          h('button',{class:'rounded-xl px-3 py-2 text-xs border border-slate-200 dark:border-slate-800', onclick:()=>openCandidateModal(c)},'Edit'),
+          h('button',{class:'rounded-xl px-3 py-2 text-xs bg-slate-900 text-white dark:bg-slate-100 dark:text-slate-900', onclick:()=>verifyCandidate(c,'VERIFIED')},'Verifikasi'),
+          h('button',{class:'rounded-xl px-3 py-2 text-xs bg-rose-600 text-white', onclick:()=>verifyCandidate(c,'REJECTED')},'Tolak'),
+        ])
+      ]));
+
+      host.innerHTML = '';
+      host.appendChild(card([
+        table(['SRC','NIK','Nama','Estate/Divisi','Keluarga','Status','Apply','Berkas','Aksi'], rows)
+      ]));
+    }
+  });
 }
+
 
 function docsBadge_(c) {
   const items = [
@@ -782,88 +1111,97 @@ function docsBadge_(c) {
 
 async function verifyCandidate(c, status) {
   const notes = prompt('Catatan (boleh kosong):', '');
-  const r = await callApi('verifyCandidate', { candidate_id: c.candidate_id, admin_status: status, admin_notes: notes||'' });
+  const payload = { candidate_id: c.candidate_id, admin_status: status, admin_notes: notes||'' };
+  const r = await callOrQueue(() => callApi('verifyCandidate', payload), 'verifyCandidate', payload, 'Verifikasi calon');
   if (!r.ok) return toast(r.error||'Gagal', 'error');
-  toast('Status diperbarui', 'ok');
+
+  // optimistic cache update
+  const pid = currentProgramId_();
+  const merged = Object.assign({}, c, payload, { __local_pending: !!r.queued, __src: (r.queued ? 'LOCAL' : 'SERVER') });
+  await cacheUpsert('candidates', { id: String(c.candidate_id), data: merged }, { program_id: pid });
+
+  toast(r.queued ? 'Di-antrikan (offline). Nanti lakukan Sinkronisasi.' : 'Status diperbarui', 'ok');
   renderCandidates();
 }
 
 function openCandidateModal(cand=null) {
-  const overlay = h('div', { class:'fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/40' }, []);
-  const modal = card([
-    h('div',{class:'text-lg font-semibold'}, cand ? 'Edit Calon' : 'Tambah Calon'),
-    h('div',{class:'mt-4 grid md:grid-cols-3 gap-3'},[
-      f('NIK','nik','contoh: 202602001'),
-      f('Nama','name',''),
-      f('Gender (L/P)','gender','L'),
-      f('Tanggal Lahir','dob','dd-mm-yyyy / yyyy'),
-      f('No HP','phone',''),
-      f('Pendidikan','education','SMP/SD/SMA/D3/S1'),
-      f('Estate','estate','SRIE'),
-      f('Divisi','divisi','1'),
-      f('Source','source',''),
-            // === RELATION (dropdown) ===
-      h('div',{class:'flex flex-col gap-1'},[
-        h('label',{class:'text-sm text-slate-600 dark:text-slate-300'},'Relation'),
-        h('select',{
-          id:'relation',
-          class:'mt-1 w-full rounded-2xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 px-4 py-3 outline-none focus:ring-2 focus:ring-emerald-500'
-        },[
-          ...['INDIVIDU','SUAMI','ISTRI','SAUDARA','TANDEM'].map(x => h('option',{value:x},x))
-        ])
-      ]),
+  const { body, close, modal, overlay } = openModal_({
+    title: cand ? 'Edit Calon' : 'Tambah Calon',
+    subtitle: 'Header tetap, isi form bisa di-scroll (mobile friendly).',
+    maxWidth: 'max-w-3xl'
+  });
 
-      // === PARTNER (muncul jika relation butuh pasangan) ===
-      h('div',{id:'partner_wrap', class:'flex flex-col gap-1 hidden'},[
-        h('label',{class:'text-sm text-slate-600 dark:text-slate-300'},'Pasangan'),
-        h('select',{
-          id:'partner_candidate_id',
-          class:'mt-1 w-full rounded-2xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 px-4 py-3 outline-none focus:ring-2 focus:ring-emerald-500'
-        },[
-          h('option',{value:''},'-- pilih pasangan --')
-        ]),
-        h('div',{class:'text-[11px] text-slate-500 dark:text-slate-400'},'Wajib untuk SUAMI/ISTRI/SAUDARA/TANDEM')
-      ]),
+  body.appendChild(h('div',{class:'grid md:grid-cols-3 gap-3'},[
+    f('NIK','nik','contoh: 202602001'),
+    f('Nama','name',''),
+    f('Gender (L/P)','gender','L'),
+    f('Tanggal Lahir','dob','dd-mm-yyyy / yyyy'),
+    f('No HP','phone',''),
+    f('Pendidikan','education','SMP/SD/SMA/D3/S1'),
+    f('Estate','estate','SRIE'),
+    f('Divisi','divisi','1'),
+    f('Source','source',''),
 
-      // === FAMILY ID (readonly, otomatis) ===
-      h('div',{class:'flex flex-col gap-1'},[
-        h('label',{class:'text-sm text-slate-600 dark:text-slate-300'},'Family ID (otomatis)'),
-        h('input',{
-          id:'family_id',
-          readOnly:true,
-          class:'mt-1 w-full rounded-2xl border border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-800/40 px-4 py-3 outline-none'
-        })
-      ]),
-
-      h('div',{class:'md:col-span-3'},[
-        h('label',{class:'text-sm text-slate-600 dark:text-slate-300'},'Alamat'),
-        h('textarea',{id:'address', rows:'2', class:'mt-1 w-full rounded-2xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 px-4 py-3 outline-none focus:ring-2 focus:ring-emerald-500'}, '')
-      ]),
-      h('div',{class:'md:col-span-3'},[
-        h('div',{class:'text-sm text-slate-600 dark:text-slate-300 mb-2'},'Berkas (upload ke Drive)'),
-        h('div',{class:'grid md:grid-cols-5 gap-2'},[
-          fileBox_('KTP','docs_ktp'),
-          fileBox_('KK','docs_kk'),
-          fileBox_('SKCK','docs_skck'),
-          fileBox_('Kesehatan','docs_health'),
-          fileBox_('Foto','photo_url', true),
-        ]),
-        h('div',{id:'uploadHint', class:'text-xs text-slate-500 dark:text-slate-400 mt-2'}, cand ? 'Pilih file untuk upload/update.' : 'Simpan calon terlebih dahulu, lalu upload berkas.')
+    // === RELATION (dropdown) ===
+    h('div',{class:'flex flex-col gap-1'},[
+      h('label',{class:'text-sm text-slate-600 dark:text-slate-300'},'Relation'),
+      h('select',{
+        id:'relation',
+        class:'mt-1 w-full rounded-2xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 px-4 py-3 outline-none focus:ring-2 focus:ring-emerald-500'
+      },[
+        ...['INDIVIDU','SUAMI','ISTRI','SAUDARA','TANDEM'].map(x => h('option',{value:x},x))
       ])
     ]),
-    h('div',{class:'mt-5 flex justify-end gap-2'},[
-      h('button',{class:'rounded-2xl px-4 py-2 text-sm border border-slate-200 dark:border-slate-800', onclick:()=>overlay.remove()},'Batal'),
-      h('button',{id:'btnSaveCandidate', class:'rounded-2xl px-4 py-2 text-sm bg-emerald-600 text-white hover:bg-emerald-700 flex items-center gap-2'},[
-        h('span',{'data-spinner':'', class:'hidden w-4 h-4 border-2 border-white/40 border-t-white rounded-full animate-spin'}),
-        h('span',{'data-label':'','data-orig':'Simpan'},'Simpan')
-      ])
-    ])
-  ]);
-  modal.classList.add('w-full','max-w-3xl');
-  overlay.appendChild(modal);
-  document.body.appendChild(overlay);
 
-    // ===========================
+    // === PARTNER (muncul jika relation butuh pasangan) ===
+    h('div',{id:'partner_wrap', class:'flex flex-col gap-1 hidden'},[
+      h('label',{class:'text-sm text-slate-600 dark:text-slate-300'},'Pasangan'),
+      h('select',{
+        id:'partner_candidate_id',
+        class:'mt-1 w-full rounded-2xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 px-4 py-3 outline-none focus:ring-2 focus:ring-emerald-500'
+      },[
+        h('option',{value:''},'-- pilih pasangan --')
+      ]),
+      h('div',{class:'text-[11px] text-slate-500 dark:text-slate-400'},'Wajib untuk SUAMI/ISTRI/SAUDARA/TANDEM')
+    ]),
+
+    // === FAMILY ID (readonly, otomatis) ===
+    h('div',{class:'flex flex-col gap-1'},[
+      h('label',{class:'text-sm text-slate-600 dark:text-slate-300'},'Family ID (otomatis)'),
+      h('input',{
+        id:'family_id',
+        readOnly:true,
+        class:'mt-1 w-full rounded-2xl border border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-800/40 px-4 py-3 outline-none'
+      })
+    ]),
+
+    h('div',{class:'md:col-span-3'},[
+      h('label',{class:'text-sm text-slate-600 dark:text-slate-300'},'Alamat'),
+      h('textarea',{id:'address', rows:'2', class:'mt-1 w-full rounded-2xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 px-4 py-3 outline-none focus:ring-2 focus:ring-emerald-500'}, '')
+    ]),
+
+    h('div',{class:'md:col-span-3'},[
+      h('div',{class:'text-sm text-slate-600 dark:text-slate-300 mb-2'},'Berkas (upload ke Drive)'),
+      h('div',{class:'grid md:grid-cols-5 gap-2'},[
+        fileBox_('KTP','docs_ktp'),
+        fileBox_('KK','docs_kk'),
+        fileBox_('SKCK','docs_skck'),
+        fileBox_('Kesehatan','docs_health'),
+        fileBox_('Foto','photo_url', true),
+      ]),
+      h('div',{id:'uploadHint', class:'text-xs text-slate-500 dark:text-slate-400 mt-2'}, cand ? 'Pilih file untuk upload/update.' : 'Simpan calon terlebih dahulu, lalu upload berkas.')
+    ]),
+  ]));
+
+  body.appendChild(h('div',{class:'mt-5 flex justify-end gap-2'},[
+    h('button',{class:'rounded-2xl px-4 py-2 text-sm border border-slate-200 dark:border-slate-800', onclick: close},'Batal'),
+    h('button',{id:'btnSaveCandidate', class:'rounded-2xl px-4 py-2 text-sm bg-emerald-600 text-white hover:bg-emerald-700 flex items-center gap-2'},[
+      h('span',{'data-spinner':'', class:'hidden w-4 h-4 border-2 border-white/40 border-t-white rounded-full animate-spin'}),
+      h('span',{'data-label':'','data-orig':'Simpan'},'Simpan')
+    ])
+  ]));
+
+  // ===========================
   // FAMILY PAIRING UI LOGIC
   // ===========================
   const relEl = document.getElementById('relation');
@@ -871,18 +1209,15 @@ function openCandidateModal(cand=null) {
   const wrapEl = document.getElementById('partner_wrap');
   const partnerEl = document.getElementById('partner_candidate_id');
 
-  // set default values
   relEl.value = (cand?.relation || 'INDIVIDU').toUpperCase();
   famEl.value = (cand?.family_id || '').trim();
 
-  // isi dropdown pasangan dari state.candidates (program yang sama)
   const all = (state.candidates || []).filter(x => x.candidate_id && x.candidate_id !== cand?.candidate_id);
   all.forEach(x => {
     const label = `${(x.nik||'').trim()} • ${(x.name||'').trim()}${x.family_id ? ' • ' + x.family_id : ''}`;
     partnerEl.appendChild(h('option',{value:x.candidate_id}, label));
   });
 
-  // jika edit dan sudah punya family_id, coba pilih pasangan otomatis (yang 1 family_id)
   if (cand?.family_id) {
     const mate = all.find(x => String(x.family_id||'').trim() === String(cand.family_id||'').trim());
     if (mate) partnerEl.value = mate.candidate_id;
@@ -896,20 +1231,16 @@ function openCandidateModal(cand=null) {
 
     if (need) {
       wrapEl.classList.remove('hidden');
-      // jika pasangan dipilih dan dia punya family_id → tampilkan
       const pid = partnerEl.value;
       const p = all.find(x => x.candidate_id === pid);
       if (p && (p.family_id||'').trim()) {
         famEl.value = (p.family_id||'').trim();
       } else if (!famEl.value) {
-        // buat sementara di UI (backend tetap otoritatif)
         famEl.value = ('FAM-' + String(Date.now()).slice(-8)).toUpperCase();
       }
     } else {
       wrapEl.classList.add('hidden');
       partnerEl.value = '';
-      // jika relation INDIVIDU, biarkan family_id tampil (kalau sebelumnya ada) sampai user simpan
-      // user bisa "lepas pasangan" saat save (lihat __clear_family)
     }
   }
 
@@ -918,11 +1249,14 @@ function openCandidateModal(cand=null) {
   refreshPartnerUI_();
 
   if (cand) {
-    ['nik','estate','divisi','family_id','relation','name','gender','dob','phone','education','source'].forEach(id=>{ const el=document.getElementById(id); if(el) el.value = cand[id] || ''; });
+    ['nik','estate','divisi','family_id','relation','name','gender','dob','phone','education','source'].forEach(id=>{
+      const el = document.getElementById(id);
+      if(el) el.value = cand[id] || '';
+    });
     document.getElementById('address').value = cand.address || '';
   }
 
-  // disable uploads until candidate_id exists
+  // ✅ FIX: modal sekarang ada (dari openModal_ destructure)
   const hasId = !!(cand && cand.candidate_id);
   Array.from(modal.querySelectorAll('input[type="file"]')).forEach(inp=>{
     inp.disabled = !hasId;
@@ -932,17 +1266,17 @@ function openCandidateModal(cand=null) {
     const btn = document.getElementById('btnSaveCandidate');
     btnBusy(btn,true,'Menyimpan...');
     try{
+      const rel = (document.getElementById('relation').value || 'INDIVIDU').toUpperCase();
+      const need = ['SUAMI','ISTRI','SAUDARA','TANDEM'].includes(rel);
+      const pid  = (document.getElementById('partner_candidate_id')?.value || '').trim();
+      if (need && !pid) {
+        toast('Relation ' + rel + ' wajib pilih pasangan', 'error');
+        return;
+      }
 
-      // ✅ VALIDASI WAJIB PASANGAN (taruh di sini)
-    const rel = (document.getElementById('relation').value || 'INDIVIDU').toUpperCase();
-    const need = ['SUAMI','ISTRI','SAUDARA','TANDEM'].includes(rel);
-    const pid  = (document.getElementById('partner_candidate_id')?.value || '').trim();
-    if (need && !pid) {
-      toast('Relation ' + rel + ' wajib pilih pasangan', 'error');
-      return;
-    }
-    const payload = {
-        candidate_id: cand?.candidate_id || '',
+      const localId = cand?.candidate_id || (crypto?.randomUUID ? crypto.randomUUID() : ('loc_' + Date.now() + '_' + Math.random().toString(36).slice(2)));
+      const payload = {
+        candidate_id: localId,
         nik: val('nik'),
         name: val('name'),
         gender: val('gender'),
@@ -961,27 +1295,41 @@ function openCandidateModal(cand=null) {
         ) ? '1' : '',
         address: (document.getElementById('address').value||'').trim(),
 
-        // ✅ kirim juga link dokumen yang sudah ada agar tidak kosong saat Simpan
         docs_ktp: (cand?.docs_ktp || '').trim(),
         docs_kk: (cand?.docs_kk || '').trim(),
         docs_skck: (cand?.docs_skck || '').trim(),
         docs_health: (cand?.docs_health || '').trim(),
         photo_url: (cand?.photo_url || '').trim(),
       };
-      const r = await callApi('upsertCandidate', Object.assign({ program_id: currentProgramId_() }, payload));
+
+      const pidCtx = currentProgramId_();
+      const r = await callOrQueue(
+        () => callApi('upsertCandidate', Object.assign({ program_id: pidCtx }, payload)),
+        'upsertCandidate',
+        Object.assign({ program_id: pidCtx }, payload),
+        'Simpan calon'
+      );
       if(!r.ok) throw new Error(r.error||'Gagal');
+
+      // update cache (optimistic)
+      const merged = Object.assign({}, cand||{}, payload, { program_id: pidCtx });
+      await cacheUpsert('candidates', { id: String(merged.candidate_id), data: merged }, { program_id: pidCtx });
+
       toast('Tersimpan', 'ok');
-      // If creating new candidate, keep modal open and enable uploads
+
+      // Jika create baru: tetap buka modal & aktifkan upload
       if (!cand?.candidate_id) {
-        cand = Object.assign({}, payload, { candidate_id: r.candidate_id });
+        cand = Object.assign({}, merged, { candidate_id: r.candidate_id || localId });
         document.getElementById('uploadHint').textContent = 'Sekarang Anda bisa upload berkas.';
         Array.from(modal.querySelectorAll('input[type="file"]')).forEach(inp=>{ inp.disabled = false; });
-        // refresh list in background
         renderCandidates();
         return;
       }
-      overlay.remove();
+
+      // ✅ FIX: tutup modal pakai close() (bukan overlay.remove())
+      close();
       renderCandidates();
+
     }catch(e){
       toast(e.message,'error');
     }finally{
@@ -1127,47 +1475,102 @@ function fileToBase64_(file) {
   });
 }
 
+
 async function renderSelection() {
+  if (String(currentProgramId_()||'') === '__ALL__') {
+    toast('Silakan pilih program tertentu (bukan "Semua Program") untuk menu ini.', 'info');
+    return renderDashboard();
+  }
+
   const v = setViewTitle('Seleksi Lapangan', 'Input nilai fisik, uji panen, karakter & kategori A/B/C');
-  const res = await callApi('listSelection', { program_id: currentProgramId_() });
-  if (!res.ok) return v.appendChild(card([h('div',{class:'text-rose-600'}, res.error||'Gagal')]));
-  const items = res.items || [];
-  v.appendChild(card([
-    table(['NIK','Nama','Admin','Rekom','Final','Aksi'], items.map(it=>[
-      it.nik, it.name, badge(it.admin_status||'-'), badge(it.recommend_category||'-'), badge(it.final_category||'-'),
-      h('button',{class:'rounded-xl px-3 py-2 text-xs bg-emerald-600 text-white', onclick:()=>openSelectionModal(it)}, 'Input/Update')
-    ]))
-  ]));
+  const pid = currentProgramId_();
+
+  const info = h('div',{class:'mb-3 text-xs text-slate-500 dark:text-slate-400'},'Memuat dari cache...');
+  v.appendChild(info);
+
+  const host = h('div',{},[
+    card([ h('div',{class:'text-sm text-slate-500 dark:text-slate-400'},'Memuat...') ])
+  ]);
+  v.appendChild(host);
+
+  const onUpdate = ({ items, from, meta, error, refreshing })=>{
+
+      info.textContent = `Cache Seleksi: ${meta?.ts ? new Date(meta.ts).toLocaleString('id-ID') : '-'} • ${refreshing ? 'refresh...' : (from==='server' ? 'SERVER refresh' : 'CACHE only')}${error ? (' • Offline: ' + error) : ''}`;
+
+      const rows = (items||[]).map(it=>[
+        srcBadge_(rowSrc_(it), !!it.__local_pending),
+        it.nik, it.name, badge(it.admin_status||'-'), badge(it.recommend_category||'-'), badge(it.final_category||'-'),
+        h('button',{class:'rounded-xl px-3 py-2 text-xs bg-emerald-600 text-white', onclick:()=>openSelectionModal(it)}, 'Input/Update')
+      ]);
+
+      host.innerHTML = '';
+      host.appendChild(card([ table(['SRC','NIK','Nama','Admin','Rekom','Final','Aksi'], rows) ]));
+  };
+
+// Local-first (work with legacy IndexedDB selection shape)
+(async ()=>{
+  const meta0 = await cacheMeta('selection');
+  const cache0 = await selectionCacheForProgram_(pid);
+  // tampilkan cache dulu
+  try{
+    onUpdate({ items: cache0.items, from:'cache', meta: meta0, error: (cache0.hasCandidateScope ? '' : 'Cache candidates kosong (scope program tidak bisa dipastikan)'), refreshing:true });
+  }catch{}
+
+  // refresh server
+  setTimeout(async ()=>{
+    try{
+      const r = await callApi('listSelection', { program_id: pid });
+      if(!(r && r.ok)) throw new Error(r?.error||'Gagal');
+      const serverRows = (r.items||[]);
+      // upsert per candidate_id (multi-program safe)
+      for(const row0 of serverRows){
+        const row = Object.assign({}, row0, { __src:'SERVER', __local_pending:false });
+        await cacheUpsert('selection', { id: String(row.candidate_id||row.id||''), data: row }, { program_id: pid });
+      }
+      const meta1 = await cacheMeta('selection');
+      const cache1 = await selectionCacheForProgram_(pid);
+      if(state.viewKey !== 'selection') return;
+      onUpdate({ items: cache1.items, from:'server', meta: meta1, error:'', refreshing:false });
+    }catch(e){
+      const meta1 = await cacheMeta('selection');
+      const cache1 = await selectionCacheForProgram_(pid);
+      if(state.viewKey !== 'selection') return;
+      onUpdate({ items: cache1.items, from:'cache', meta: meta1||meta0, error:String(e?.message||e), refreshing:false });
+    }
+  },0);
+})();
 }
 
+
+
 function openSelectionModal(it) {
-  const overlay = h('div', { class:'fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/40' }, []);
-  const modal = card([
-    h('div',{class:'text-lg font-semibold'},`Seleksi: ${it.name} (${it.nik})`),
-    h('div',{class:'mt-4 grid md:grid-cols-3 gap-3'},[
-      mini('Fisik','fisik', it.tes_fisik_score||''),
-      mini('Uji Panen','panen', it.tes_panen_score||''),
-      mini('Karakter','karakter', it.tes_karakter_score||''),
-      h('div',{class:'md:col-span-3'},[
-        h('label',{class:'text-sm text-slate-600 dark:text-slate-300'},'Catatan'),
-        h('textarea',{id:'sel_notes', rows:'2', class:'mt-1 w-full rounded-2xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 px-4 py-3 outline-none focus:ring-2 focus:ring-emerald-500'}, it.notes||'')
-      ]),
-      h('div',{class:'md:col-span-3 flex items-center gap-2'},[
-        h('div',{class:'text-sm text-slate-500 dark:text-slate-400'},'Final kategori:'),
-        selectCat(it.final_category||''),
-      ])
+  const { body, close } = openModal_({
+    title: `Seleksi: ${it.name} (${it.nik})`,
+    subtitle: 'Header tetap, isi bisa di-scroll.',
+    maxWidth: 'max-w-3xl'
+  });
+
+  body.appendChild(h('div',{class:'grid md:grid-cols-3 gap-3'},[
+    mini('Fisik','fisik', it.tes_fisik_score||''),
+    mini('Uji Panen','panen', it.tes_panen_score||''),
+    mini('Karakter','karakter', it.tes_karakter_score||''),
+    h('div',{class:'md:col-span-3'},[
+      h('label',{class:'text-sm text-slate-600 dark:text-slate-300'},'Catatan'),
+      h('textarea',{id:'sel_notes', rows:'2', class:'mt-1 w-full rounded-2xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 px-4 py-3 outline-none focus:ring-2 focus:ring-emerald-500'}, it.notes||'')
     ]),
-    h('div',{class:'mt-5 flex justify-end gap-2'},[
-      h('button',{class:'rounded-2xl px-4 py-2 text-sm border border-slate-200 dark:border-slate-800', onclick:()=>overlay.remove()},'Batal'),
-      h('button',{id:'btnSaveSel', class:'rounded-2xl px-4 py-2 text-sm bg-emerald-600 text-white hover:bg-emerald-700 flex items-center gap-2'},[
-        h('span',{'data-spinner':'', class:'hidden w-4 h-4 border-2 border-white/40 border-t-white rounded-full animate-spin'}),
-        h('span',{'data-label':'','data-orig':'Simpan'},'Simpan')
-      ])
+    h('div',{class:'md:col-span-3 flex items-center gap-2'},[
+      h('div',{class:'text-sm text-slate-500 dark:text-slate-400'},'Final kategori:'),
+      selectCat(it.final_category||''),
     ])
-  ]);
-  modal.classList.add('w-full','max-w-3xl');
-  overlay.appendChild(modal);
-  document.body.appendChild(overlay);
+  ]));
+
+  body.appendChild(h('div',{class:'mt-5 flex justify-end gap-2'},[
+    h('button',{class:'rounded-2xl px-4 py-2 text-sm border border-slate-200 dark:border-slate-800', onclick: close},'Batal'),
+    h('button',{id:'btnSaveSel', class:'rounded-2xl px-4 py-2 text-sm bg-emerald-600 text-white hover:bg-emerald-700 flex items-center gap-2'},[
+      h('span',{'data-spinner':'', class:'hidden w-4 h-4 border-2 border-white/40 border-t-white rounded-full animate-spin'}),
+      h('span',{'data-label':'','data-orig':'Simpan'},'Simpan')
+    ])
+  ]));
 
   document.getElementById('btnSaveSel').onclick = async ()=>{
     const btn = document.getElementById('btnSaveSel');
@@ -1181,10 +1584,17 @@ function openSelectionModal(it) {
         final_category: (document.getElementById('final_cat').value||'').trim(),
         notes: (document.getElementById('sel_notes').value||'').trim()
       };
-      const r = await callApi('submitSelection', Object.assign({ program_id: currentProgramId_() }, payload));
+      const pid = currentProgramId_();
+      const req = Object.assign({ program_id: pid }, payload);
+      const r = await callOrQueue(() => callApi('submitSelection', req), 'submitSelection', req, 'Simpan seleksi');
       if(!r.ok) throw new Error(r.error||'Gagal');
-      toast('Seleksi tersimpan', 'ok');
-      overlay.remove();
+
+      // optimistic cache update
+      const merged = Object.assign({}, it, payload, { program_id: pid, __local_pending: !!r.queued, __src: (r.queued?'LOCAL':'SERVER') });
+      await cacheUpsert('selection', { id: String(it.candidate_id), data: merged }, { program_id: pid });
+
+      toast(r.queued ? 'Di-antrikan (offline). Nanti lakukan Sinkronisasi.' : 'Seleksi tersimpan', 'ok');
+      close();
       renderSelection();
     }catch(e){
       toast(e.message,'error');
@@ -1212,10 +1622,19 @@ function openSelectionModal(it) {
   }
 }
 
+
 async function renderParticipants() {
+  if (String(currentProgramId_()||'') === '__ALL__') {
+    toast('Silakan pilih program tertentu (bukan "Semua Program") untuk menu ini.', 'info');
+    return renderDashboard();
+  }
+
   const v = setViewTitle('Peserta', 'Daftar peserta aktif (A/B) per program');
-  const res = await callApi('listParticipants', { program_id: currentProgramId_() });
-  if (res.ok) state.participants = res.participants || [];
+  const pid = currentProgramId_();
+
+  const info = h('div',{class:'mb-3 text-xs text-slate-500 dark:text-slate-400'},'Memuat dari cache...');
+  v.appendChild(info);
+
   const top = h('div',{class:'flex gap-2 mb-4'},[
     h('button',{class:'rounded-2xl px-4 py-2 bg-emerald-600 text-white hover:bg-emerald-700 text-sm', onclick:async ()=>{
       const r = await callApi('generateParticipantsFromSelection', { program_id: currentProgramId_() });
@@ -1227,48 +1646,75 @@ async function renderParticipants() {
   ]);
   v.appendChild(top);
 
-  v.appendChild(card([
-    table(['NIK','Nama','Cat','Status','Mentor','Aksi'], state.participants.map(p=>[
-      p.nik, p.name, badge(p.category||'-'), badge(p.status||'-'), p.mentor_name || '-',
-      h('button',{class:'rounded-xl px-3 py-2 text-xs border border-slate-200 dark:border-slate-800', onclick:()=>openPlacementModal(p)},'Penempatan')
-    ]))
-  ]));
+  const host = h('div',{},[
+    card([ h('div',{class:'text-sm text-slate-500 dark:text-slate-400'},'Memuat...') ])
+  ]);
+  v.appendChild(host);
+
+  localFirstHydrateList_({
+    store: 'participants',
+    fetchFn: () => callApi('listParticipants', { program_id: pid }),
+    filter: { program_id: pid },
+    idKey: 'participant_id',
+    serverPickKey: 'participants',
+    viewToken: ()=> state.viewKey === 'participants',
+    onUpdate: ({ items, from, meta, error, refreshing })=>{
+      state.participants = items || [];
+      info.textContent = `Cache Peserta: ${meta?.ts ? new Date(meta.ts).toLocaleString('id-ID') : '-'} • ${refreshing ? 'refresh...' : (from==='server' ? 'SERVER refresh' : 'CACHE only')}${error ? (' • Offline: ' + error) : ''}`;
+
+      const rows = (state.participants||[]).map(p=>[
+        srcBadge_(rowSrc_(p), !!p.__local_pending),
+        p.nik, p.name, badge(p.category||'-'), badge(p.status||'-'), p.mentor_name || '-',
+        h('button',{class:'rounded-xl px-3 py-2 text-xs border border-slate-200 dark:border-slate-800', onclick:()=>openPlacementModal(p)},'Penempatan')
+      ]);
+
+      host.innerHTML = '';
+      host.appendChild(card([ table(['SRC','NIK','Nama','Cat','Status','Mentor','Aksi'], rows) ]));
+    }
+  });
 }
 
+
 function openPlacementModal(p) {
-  const overlay = h('div', { class:'fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/40' }, []);
-  const modal = card([
-    h('div',{class:'text-lg font-semibold'},`Penempatan: ${p.name}`),
-    h('div',{class:'mt-4 grid md:grid-cols-3 gap-3'},[
-      field('Estate','estate', p.estate||''),
-      field('Divisi','divisi', p.divisi||''),
-      field('Ancak','ancak', p.ancak||''),
-    ]),
-    h('div',{class:'mt-5 flex justify-end gap-2'},[
-      h('button',{class:'rounded-2xl px-4 py-2 text-sm border border-slate-200 dark:border-slate-800', onclick:()=>overlay.remove()},'Batal'),
-      h('button',{id:'btnSavePlace', class:'rounded-2xl px-4 py-2 text-sm bg-emerald-600 text-white hover:bg-emerald-700 flex items-center gap-2'},[
-        h('span',{'data-spinner':'', class:'hidden w-4 h-4 border-2 border-white/40 border-t-white rounded-full animate-spin'}),
-        h('span',{'data-label':'','data-orig':'Simpan'},'Simpan')
-      ])
+  const { body, close } = openModal_({
+    title: `Penempatan: ${p.name}`,
+    subtitle: 'Header tetap, isi bisa di-scroll.',
+    maxWidth: 'max-w-2xl'
+  });
+
+  body.appendChild(h('div',{class:'grid md:grid-cols-3 gap-3'},[
+    field('Estate','estate', p.estate||''),
+    field('Divisi','divisi', p.divisi||''),
+    field('Ancak','ancak', p.ancak||''),
+  ]));
+
+  body.appendChild(h('div',{class:'mt-5 flex justify-end gap-2'},[
+    h('button',{class:'rounded-2xl px-4 py-2 text-sm border border-slate-200 dark:border-slate-800', onclick: close},'Batal'),
+    h('button',{id:'btnSavePlace', class:'rounded-2xl px-4 py-2 text-sm bg-emerald-600 text-white hover:bg-emerald-700 flex items-center gap-2'},[
+      h('span',{'data-spinner':'', class:'hidden w-4 h-4 border-2 border-white/40 border-t-white rounded-full animate-spin'}),
+      h('span',{'data-label':'','data-orig':'Simpan'},'Simpan')
     ])
-  ]);
-  modal.classList.add('w-full','max-w-2xl');
-  overlay.appendChild(modal);
-  document.body.appendChild(overlay);
+  ]));
 
   document.getElementById('btnSavePlace').onclick = async ()=>{
     const btn = document.getElementById('btnSavePlace');
     btnBusy(btn,true,'Menyimpan...');
     try{
-      const r = await callApi('setPlacement', {
+      const payload = {
         participant_id: p.participant_id,
         estate: val('estate'),
         divisi: val('divisi'),
         ancak: val('ancak'),
-      });
+      };
+      const r = await callOrQueue(() => callApi('setPlacement', payload), 'setPlacement', payload, 'Penempatan');
       if(!r.ok) throw new Error(r.error||'Gagal');
+
+      // optimistic cache
+      const pidCtx = currentProgramId_();
+      const merged = Object.assign({}, p, payload, { program_id: pidCtx, __local_pending: !!r.queued, __src: (r.queued?'LOCAL':'SERVER') });
+      await cacheUpsert('participants', { id: String(p.participant_id), data: merged }, { program_id: pidCtx });
       toast('Penempatan tersimpan', 'ok');
-      overlay.remove();
+      close();
       renderParticipants();
     }catch(e){ toast(e.message,'error'); }
     finally{ btnBusy(btn,false,'Simpan'); }
@@ -1283,190 +1729,295 @@ function openPlacementModal(p) {
   function val(id){ return (document.getElementById(id).value||'').trim(); }
 }
 
+
 async function renderMentors() {
+  if (String(currentProgramId_()||'') === '__ALL__') {
+    toast('Silakan pilih program tertentu (bukan "Semua Program") untuk menu ini.', 'info');
+    return renderDashboard();
+  }
+
   const v = setViewTitle('Mentor & Pairing', 'Kelola mentor dan pairing 1-on-1 untuk peserta kategori B');
-  const res = await callApi('listMentors', { program_id: currentProgramId_() });
-  if (res.ok) { state.mentors = res.mentors||[]; state.pairings = res.pairings||[]; }
-  const top = h('div',{class:'flex flex-col md:flex-row gap-2 mb-4'},[
-    h('button',{class:'rounded-2xl px-4 py-2 bg-emerald-600 text-white hover:bg-emerald-700 text-sm', onclick:()=>openMentorModal()},'Tambah Mentor'),
-    h('button',{class:'rounded-2xl px-4 py-2 border border-slate-200 dark:border-slate-800 text-sm', onclick:()=>openPairingModal()},'Assign Pairing'),
-    h('button',{class:'rounded-2xl px-4 py-2 border border-slate-200 dark:border-slate-800 text-sm', onclick:()=>renderMentors()},'Refresh'),
+  const pid = currentProgramId_();
+
+  const info = h('div',{class:'mb-3 text-xs text-slate-500 dark:text-slate-400'},'Memuat dari cache...');
+  v.appendChild(info);
+
+  const top = h('div',{class:'flex flex-col md:flex-row md:items-center gap-2 mb-4'},[
+    h('div',{class:'flex gap-2'},[
+      h('button',{class:'rounded-2xl px-4 py-2 bg-emerald-600 text-white hover:bg-emerald-700 text-sm', onclick:()=>openMentorModal()},'Tambah Mentor'),
+      h('button',{class:'rounded-2xl px-4 py-2 border border-slate-200 dark:border-slate-800 text-sm', onclick:()=>renderMentors()},'Refresh'),
+    ]),
+    h('div',{class:'md:ml-auto text-xs text-slate-500 dark:text-slate-400'},'Tips: Pairing hanya untuk peserta kategori B.')
   ]);
   v.appendChild(top);
 
-  v.appendChild(h('div',{class:'grid md:grid-cols-2 gap-4'},[
-    card([
-      h('div',{class:'font-semibold mb-3'},'Mentor'),
-      table(['NIK','Nama','Estate','Aktif'], state.mentors.map(m=>[
-        m.nik, m.name, m.estate||'-', badge(m.active||'TRUE')
-      ]))
-    ]),
-    card([
-      h('div',{class:'font-semibold mb-3'},'Pairing'),
-      table(['Mentor','Mentee','Status','Mulai'], state.pairings.map(p=>[
-        p.mentor_name||'-', p.participant_name||'-', badge(p.status||'-'), (p.start_date ? formatDateLongID(p.start_date, 'Asia/Jakarta') : '-')
-      ]))
-    ])
-  ]));
+  const host = h('div',{class:'space-y-4'},[
+    card([ h('div',{class:'text-sm text-slate-500 dark:text-slate-400'},'Memuat...') ])
+  ]);
+  v.appendChild(host);
+
+  const renderUI = async ({ mentors, pairings, from, error, refreshing })=>{
+    state.mentors = mentors || [];
+    state.pairings = pairings || [];
+
+    const mMeta = await cacheMeta('mentors');
+    const pMeta = await cacheMeta('pairings');
+    const tM = mMeta?.ts ? new Date(mMeta.ts).toLocaleString('id-ID') : '-';
+    const tP = pMeta?.ts ? new Date(pMeta.ts).toLocaleString('id-ID') : '-';
+    info.textContent = `Cache Mentor: ${tM} • Cache Pairing: ${tP} • ${refreshing ? 'refresh...' : (from==='server' ? 'SERVER refresh' : 'CACHE only')}${error ? (' • Offline: ' + error) : ''}`;
+
+    const mentorRows = (state.mentors||[]).map(m=>[
+      srcBadge_(rowSrc_(m), !!m.__local_pending),
+      m.nik||'-',
+      m.name||'-',
+      badge((m.status||'ACTIVE').toUpperCase()),
+      h('div',{class:'flex flex-wrap gap-2'},[
+        h('button',{class:'rounded-xl px-3 py-2 text-xs border border-slate-200 dark:border-slate-800', onclick:()=>openMentorModal(m)},'Edit'),
+              ])
+    ]);
+
+    const pairingRows = (state.pairings||[]).map(p=>[
+      srcBadge_(rowSrc_(p), !!p.__local_pending),
+      p.participant_nik||'-',
+      p.participant_name||'-',
+      badge(p.participant_category||'-'),
+      p.mentor_name||'-',
+      badge((p.status||'ACTIVE').toUpperCase()),
+      h('div',{class:'flex flex-wrap gap-2'},[
+        h('button',{class:'rounded-xl px-3 py-2 text-xs border border-slate-200 dark:border-slate-800', onclick:()=>openPairingModal(p)},'Detail'),
+              ])
+    ]);
+
+    host.innerHTML = '';
+    host.appendChild(card([
+      h('div',{class:'flex items-center justify-between mb-3'},[
+        h('div',{class:'text-sm font-semibold'},'Mentor'),
+        h('button',{class:'rounded-xl px-3 py-2 text-xs bg-slate-900 text-white dark:bg-slate-100 dark:text-slate-900', onclick:()=>openMentorModal()},'Tambah')
+      ]),
+      table(['SRC','NIK','Nama','Status','Aksi'], mentorRows)
+    ]));
+
+    host.appendChild(card([
+      h('div',{class:'flex items-center justify-between mb-3'},[
+        h('div',{class:'text-sm font-semibold'},'Pairing (Peserta B)'),
+        h('button',{class:'rounded-xl px-3 py-2 text-xs bg-emerald-600 text-white', onclick:()=>openPairingModal(null)},'Tambah Pairing')
+      ]),
+      table(['SRC','NIK Peserta','Nama Peserta','Cat','Mentor','Status','Aksi'], pairingRows)
+    ]));
+  };
+
+  // 1) render cache now
+  const cachedMentors = await cacheGetAll('mentors', { program_id: pid });
+  const cachedPairings = await cacheGetAll('pairings', { program_id: pid });
+  await renderUI({ mentors: cachedMentors, pairings: cachedPairings, from:'cache', error:'', refreshing:true });
+
+  // 2) background refresh
+  setTimeout(async ()=>{
+    try{
+      const res = await callApi('listMentors', { program_id: pid });
+      if (!res.ok) throw new Error(res.error||'Gagal');
+      const serverMentors = (res.mentors||[]).map(x=>Object.assign({}, x, { __src:'SERVER', __local_pending:false }));
+      const serverPairings = (res.pairings||[]).map(x=>Object.assign({}, x, { __src:'SERVER', __local_pending:false }));
+
+      const mergedMentors = mergeLocalFirst_(cachedMentors, serverMentors, 'mentor_id');
+      const mergedPairings = mergeLocalFirst_(cachedPairings, serverPairings, 'pairing_id');
+
+      await cacheReplace('mentors', normalizeRows_(mergedMentors, 'mentor_id'), { program_id: pid });
+      await cacheReplace('pairings', normalizeRows_(mergedPairings, 'pairing_id'), { program_id: pid });
+
+      if (state.viewKey !== 'mentors') return;
+      await renderUI({ mentors: mergedMentors, pairings: mergedPairings, from:'server', error:'', refreshing:false });
+    } catch(e){
+      if (state.viewKey !== 'mentors') return;
+      await renderUI({ mentors: cachedMentors, pairings: cachedPairings, from:'cache', error:String(e?.message||e), refreshing:false });
+    }
+  }, 0);
 }
 
-function openMentorModal(m=null) {
-  const overlay = h('div', { class:'fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/40' }, []);
-  const modal = card([
-    h('div',{class:'text-lg font-semibold'}, m?'Edit Mentor':'Tambah Mentor'),
-    h('div',{class:'mt-4 grid md:grid-cols-2 gap-3'},[
-      f('NIK','m_nik',''),
-      f('Nama','m_name',''),
-      f('Estate','m_estate',''),
-      f('Divisi','m_divisi',''),
-      f('Pengalaman (tahun)','m_exp',''),
-    ]),
-    h('div',{class:'mt-5 flex justify-end gap-2'},[
-      h('button',{class:'rounded-2xl px-4 py-2 text-sm border border-slate-200 dark:border-slate-800', onclick:()=>overlay.remove()},'Batal'),
-      h('button',{id:'btnSaveMentor', class:'rounded-2xl px-4 py-2 text-sm bg-emerald-600 text-white hover:bg-emerald-700 flex items-center gap-2'},[
-        h('span',{'data-spinner':'', class:'hidden w-4 h-4 border-2 border-white/40 border-t-white rounded-full animate-spin'}),
-        h('span',{'data-label':'','data-orig':'Simpan'},'Simpan')
-      ])
+
+// ======================
+// MENTOR + PAIRING MODALS (standalone, reused by renderMentors)
+// ======================
+function openMentorModal(m=null){
+  const pid = currentProgramId_();
+  const { body, close } = openModal_({
+    title: m ? 'Edit Mentor' : 'Tambah Mentor',
+    subtitle: 'Simpan akan memakai local-first: cache tampil dulu, server menyusul.',
+    maxWidth: 'max-w-3xl'
+  });
+
+  body.appendChild(h('div',{class:'grid md:grid-cols-3 gap-3'},[
+    f('NIK','m_nik',''),
+    f('Nama','m_name',''),
+    f('Experience (tahun)','m_exp',''),
+    f('Estate','m_estate', (state.myEstate||m?.estate||'').toUpperCase()),
+    f('Divisi','m_divisi', m?.divisi||''),
+    h('div',{class:'md:col-span-3'},[
+      h('label',{class:'text-sm text-slate-600 dark:text-slate-300'},'Catatan'),
+      h('textarea',{id:'m_notes', rows:'2', class:'mt-1 w-full rounded-2xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 px-4 py-3 outline-none focus:ring-2 focus:ring-emerald-500'}, m?.notes||'')
     ])
-  ]);
-  modal.classList.add('w-full','max-w-2xl');
-  overlay.appendChild(modal);
-  document.body.appendChild(overlay);
+  ]));
+
+  // preset
+  document.getElementById('m_nik').value = m?.nik||'';
+  document.getElementById('m_name').value = m?.name||'';
+  document.getElementById('m_exp').value = m?.experience_years||'';
+  document.getElementById('m_estate').value = (m?.estate || state.myEstate || '').toUpperCase();
+  document.getElementById('m_divisi').value = m?.divisi||'';
+
+  body.appendChild(h('div',{class:'mt-5 flex justify-end gap-2'},[
+    h('button',{class:'rounded-2xl px-4 py-2 text-sm border border-slate-200 dark:border-slate-800', onclick: close},'Batal'),
+    h('button',{id:'btnSaveMentor', class:'rounded-2xl px-4 py-2 text-sm bg-emerald-600 text-white hover:bg-emerald-700 flex items-center gap-2'},[
+      h('span',{'data-spinner':'', class:'hidden w-4 h-4 border-2 border-white/40 border-t-white rounded-full animate-spin'}),
+      h('span',{'data-label':'','data-orig':'Simpan'},'Simpan')
+    ])
+  ]));
 
   document.getElementById('btnSaveMentor').onclick = async ()=>{
     const btn = document.getElementById('btnSaveMentor');
     btnBusy(btn,true,'Menyimpan...');
     try{
-      const r = await callApi('upsertMentor', {
+      const payload = {
         mentor_id: m?.mentor_id || '',
-        nik: val('m_nik'),
-        name: val('m_name'),
-        estate: val('m_estate'),
-        divisi: val('m_divisi'),
-        experience_years: val('m_exp')
-      });
+        program_id: pid,
+        nik: (document.getElementById('m_nik').value||'').trim(),
+        name: (document.getElementById('m_name').value||'').trim(),
+        experience_years: (document.getElementById('m_exp').value||'').trim(),
+        estate: (document.getElementById('m_estate').value||'').trim().toUpperCase(),
+        divisi: (document.getElementById('m_divisi').value||'').trim(),
+        notes: (document.getElementById('m_notes').value||'').trim(),
+      };
+      const r = await callOrQueue(() => callApi('upsertMentor', payload), 'upsertMentor', payload, 'Simpan mentor');
       if(!r.ok) throw new Error(r.error||'Gagal');
-      toast('Mentor tersimpan','ok');
-      overlay.remove();
-      renderMentors();
-    }catch(e){ toast(e.message,'error'); }
-    finally{ btnBusy(btn,false,'Simpan'); }
-  };
 
-  function f(label,id,ph){
-    return h('div',{},[
-      h('label',{class:'text-sm text-slate-600 dark:text-slate-300'},label),
-      h('input',{id, placeholder:ph||'', class:'mt-1 w-full rounded-2xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 px-4 py-3 outline-none focus:ring-2 focus:ring-emerald-500'})
-    ]);
-  }
-  function val(id){ return (document.getElementById(id).value||'').trim(); }
+      // optimistic cache
+      const id = String(r.mentor_id || payload.mentor_id || (crypto?.randomUUID ? crypto.randomUUID() : ('loc_'+Date.now())));
+      const merged = Object.assign({}, m||{}, payload, { mentor_id:id, __local_pending: !!r.queued, __src: (r.queued?'LOCAL':'SERVER') });
+      await cacheUpsert('mentors', { id, data: merged }, { program_id: pid });
+
+      toast(r.queued ? 'Di-antrikan (offline). Nanti lakukan Sinkronisasi.' : 'Mentor tersimpan', 'ok');
+      close();
+      renderMentors();
+    }catch(e){
+      toast(e.message,'error');
+    }finally{
+      btnBusy(btn,false,'Simpan');
+    }
+  };
 }
 
-async function openPairingModal() {
-  // load peserta B + mentors fresh (pakai program context!)
-  const pr = await callApi('listParticipants', { program_id: currentProgramId_() });
-  if (pr.ok) state.participants = pr.participants || [];
-  const bList = state.participants.filter(p => String(p.category || '').toUpperCase() === 'B');
+async function openPairingModal(p=null){
+  const pid = currentProgramId_();
+  const isDetail = !!p;
 
-  const overlay = h('div', { class:'fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/40' }, []);
-  const modal = card([
-    h('div',{class:'text-lg font-semibold'},'Assign Pairing Mentor–Mentee'),
+  // Lookup data (cache first)
+  let parts = await cacheGetAll('participants', { program_id: pid });
+  if (!parts.length) {
+    try{
+      const pr = await callApi('listParticipants', { program_id: pid });
+      if (pr.ok) parts = pr.participants || [];
+    }catch(e){}
+  }
+  parts = (parts||[]).filter(x => String(x.category||'').toUpperCase()==='B'); // only B
 
-    h('div',{class:'mt-4 grid md:grid-cols-2 gap-3'},[
-      h('div',{},[
-        h('label',{class:'text-sm text-slate-600 dark:text-slate-300'},'Mentor'),
-        select('pair_mentor', state.mentors.map(m=>({value:m.mentor_id, label:`${m.name} (${m.nik})`})))
-      ]),
-      h('div',{},[
-        h('label',{class:'text-sm text-slate-600 dark:text-slate-300'},'Peserta (Kategori B)'),
-        select('pair_participant', bList.map(p=>{
-          const nm = String(p.name||'').trim();
-          const nik = String(p.nik||'').trim();
-          const cid = String(p.candidate_id||'').trim();
-          const fam = String(p.family_id||'').trim();
+  let mentors = await cacheGetAll('mentors', { program_id: pid });
+  if (!mentors.length) {
+    try{
+      const mr = await callApi('lookupMentors', { program_id: pid });
+      if (mr.ok) mentors = mr.items || [];
+    }catch(e){}
+  }
 
-          const labelBase = (nm || nik)
-            ? `${nm || '(tanpa nama)'} (${nik || '-'})`
-            : (cid ? `Candidate ${cid}` : '(data kosong)');
+  const { body, close } = openModal_({
+    title: isDetail ? 'Detail Pairing' : 'Tambah Pairing',
+    subtitle: isDetail ? 'Pairing aktif bersifat idempotent. Perubahan mentor memerlukan penutupan pairing lama (fitur belum dibuka).' : 'Pairing untuk peserta kategori B. Bisa auto-apply ke family (opsional).',
+    maxWidth: 'max-w-3xl'
+  });
 
-          const label = fam ? `${labelBase} • Family:${fam}` : labelBase;
-          return { value:p.participant_id, label };
-        }))
-      ]),
-
-      h('div',{},[
-        h('label',{class:'text-sm text-slate-600 dark:text-slate-300'},'Mulai'),
-        h('input',{id:'pair_start', value:formatDateISO(new Date()), class:'mt-1 w-full rounded-2xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 px-4 py-3 outline-none focus:ring-2 focus:ring-emerald-500'})
-      ]),
-      h('div',{},[
-        h('label',{class:'text-sm text-slate-600 dark:text-slate-300'},'Selesai (opsional)'),
-        h('input',{id:'pair_end', value:'', placeholder:'YYYY-MM-DD', class:'mt-1 w-full rounded-2xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 px-4 py-3 outline-none focus:ring-2 focus:ring-emerald-500'})
-      ]),
-
-      // ✅ Checkbox apply_family (full row)
-      h('div', { class:'md:col-span-2' }, [
-        h('label', { class:'flex items-center gap-2 text-sm mt-2 select-none cursor-pointer text-slate-700 dark:text-slate-200' }, [
-          h('input', { id:'pair_apply_family', type:'checkbox', checked:true, class:'w-4 h-4 rounded border-slate-300 dark:border-slate-700' }),
-          h('span', {}, 'Terapkan ke pasangan (family)')
-        ]),
-        h('div', { class:'text-xs text-slate-500 dark:text-slate-400 mt-1' },
-          'Jika dicentang, anggota family_id yang sama (kategori B) akan otomatis dipairing ke mentor yang sama (jika belum punya pairing aktif).'
-        )
-      ]),
-    ]),
-
-    h('div',{class:'mt-5 flex justify-end gap-2'},[
-      h('button',{class:'rounded-2xl px-4 py-2 text-sm border border-slate-200 dark:border-slate-800', onclick:()=>overlay.remove()},'Batal'),
-      h('button',{id:'btnSavePair', class:'rounded-2xl px-4 py-2 text-sm bg-emerald-600 text-white hover:bg-emerald-700 flex items-center gap-2'},[
-        h('span',{'data-spinner':'', class:'hidden w-4 h-4 border-2 border-white/40 border-t-white rounded-full animate-spin'}),
-        h('span',{'data-label':'','data-orig':'Simpan'},'Simpan')
+  if (isDetail) {
+    body.appendChild(card([
+      table(['Field','Value'],[
+        ['Peserta', `${p.participant_name||'-'} (${p.participant_nik||'-'})`],
+        ['Mentor', `${p.mentor_name||'-'}`],
+        ['Status', String(p.status||'').toUpperCase()||'-'],
+        ['Start', p.start_date ? formatDateDMYID(p.start_date) : '-'],
+        ['End', p.end_date ? formatDateDMYID(p.end_date) : '-'],
       ])
-    ])
-  ]);
+    ]));
+    body.appendChild(h('div',{class:'mt-5 flex justify-end'},[
+      h('button',{class:'rounded-2xl px-4 py-2 text-sm bg-slate-900 text-white dark:bg-slate-100 dark:text-slate-900', onclick: close},'Tutup')
+    ]));
+    return;
+  }
 
-  modal.classList.add('w-full','max-w-3xl');
-  overlay.appendChild(modal);
-  document.body.appendChild(overlay);
+  body.appendChild(h('div',{class:'grid md:grid-cols-3 gap-3'},[
+    selectField('Peserta (B)','pair_participant',
+      (parts||[]).map(x=>({ value:x.participant_id, label:`${x.nik||''} • ${x.name||''} • ${x.estate||''}/${x.divisi||''} • family:${x.family_id||'-'}` })),
+      ''
+    ),
+    selectField('Mentor','pair_mentor',
+      (mentors||[]).map(x=>({ value:x.mentor_id, label:`${x.nik||''} • ${x.name||''}` })),
+      ''
+    ),
+    f('Start Date','pair_start', todayDMY()),
+    h('div',{class:'md:col-span-3 flex items-center gap-2'},[
+      h('input',{id:'pair_apply_family', type:'checkbox', checked:true}),
+      h('label',{for:'pair_apply_family', class:'text-sm text-slate-600 dark:text-slate-300'},'Auto-apply ke Family ID yang sama (hanya peserta kategori B)')
+    ])
+  ]));
+
+  body.appendChild(h('div',{class:'mt-5 flex justify-end gap-2'},[
+    h('button',{class:'rounded-2xl px-4 py-2 text-sm border border-slate-200 dark:border-slate-800', onclick: close},'Batal'),
+    h('button',{id:'btnSavePair', class:'rounded-2xl px-4 py-2 text-sm bg-emerald-600 text-white hover:bg-emerald-700 flex items-center gap-2'},[
+      h('span',{'data-spinner':'', class:'hidden w-4 h-4 border-2 border-white/40 border-t-white rounded-full animate-spin'}),
+      h('span',{'data-label':'','data-orig':'Simpan'},'Simpan')
+    ])
+  ]));
 
   document.getElementById('btnSavePair').onclick = async ()=>{
     const btn = document.getElementById('btnSavePair');
     btnBusy(btn,true,'Menyimpan...');
     try{
-      const applyFamily = document.getElementById('pair_apply_family').checked ? 'TRUE' : 'FALSE';
+      const participant_id = (document.getElementById('pair_participant').value||'').trim();
+      const mentor_id = (document.getElementById('pair_mentor').value||'').trim();
+      const startDisp = (document.getElementById('pair_start').value||'').trim();
+      const start_date = dmyToISO(startDisp);
+      if(!participant_id || !mentor_id) throw new Error('Peserta & Mentor wajib');
+      if(!start_date) throw new Error('Start Date harus dd-mm-yyyy');
 
-      const r = await callApi('assignMentor', {
-        program_id: currentProgramId_(),          // ✅ NEW (pakai context program UI)
-        mentor_id: (document.getElementById('pair_mentor').value||'').trim(),
-        participant_id: (document.getElementById('pair_participant').value||'').trim(),
-        start_date: (document.getElementById('pair_start').value||'').trim(),
-        end_date: (document.getElementById('pair_end').value||'').trim(),
-        apply_family: applyFamily,
-      });
+      const payload = {
+        program_id: pid,
+        participant_id,
+        mentor_id,
+        start_date,
+        apply_family: document.getElementById('pair_apply_family').checked ? 'TRUE' : 'FALSE'
+      };
 
+      const r = await callOrQueue(() => callApi('assignMentor', payload), 'assignMentor', payload, 'Assign mentor');
       if(!r.ok) throw new Error(r.error||'Gagal');
 
-      // jika backend kirim auto_applied_participant_ids, tampilkan informasinya (opsional)
-      const autoN = Array.isArray(r.auto_applied_participant_ids) ? r.auto_applied_participant_ids.length : 0;
-      toast(autoN ? `Pairing tersimpan + auto family ${autoN}` : 'Pairing tersimpan', 'ok');
-
-      overlay.remove();
+      toast(r.queued ? 'Di-antrikan (offline). Nanti lakukan Sinkronisasi.' : 'Pairing tersimpan', 'ok');
+      close();
       renderMentors();
-    }catch(e){ toast(e.message,'error'); }
-    finally{ btnBusy(btn,false,'Simpan'); }
+    }catch(e){
+      toast(e.message,'error');
+    }finally{
+      btnBusy(btn,false,'Simpan');
+    }
   };
-
-  function select(id, opts){
-    const s = h('select',{id, class:'mt-1 w-full rounded-2xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 px-3 py-3 text-sm outline-none focus:ring-2 focus:ring-emerald-500'},[
-      ...(opts.length?[]:[h('option',{value:''},'—')]),
-      ...opts.map(o=>h('option',{value:o.value},o.label))
-    ]);
-    return s;
-  }
 }
 
+
+
 async function renderMonitoring(){
+  if (String(currentProgramId_()||'') === '__ALL__') {
+    toast('Silakan pilih program tertentu (bukan "Semua Program") untuk menu ini.', 'info');
+    return renderDashboard();
+  }
+
   const v = setViewTitle('Monitoring Harian', 'Input log harian (mandor/mentor/asisten) dan lihat rekap cepat');
   const today = todayDMY();
+
   const top = h('div',{class:'grid md:grid-cols-4 gap-3 mb-4'},[
     h('div',{},[
       h('label',{class:'text-sm text-slate-600 dark:text-slate-300'},'Tanggal'),
@@ -1485,94 +2036,318 @@ async function renderMonitoring(){
         const dDisp = (document.getElementById('mon_date').value||'').trim();
         const d = dmyToISO(dDisp);
         if(!d) return toast('Format tanggal harus dd-mm-yyyy', 'error');
-        const r = await callApi('computeWeeklyRecap', { any_date: d });
+        const pid = currentProgramId_();
+        const payload = { program_id: pid, any_date: d };
+        const r = await callOrQueue(() => callApi('computeWeeklyRecap', payload), 'computeWeeklyRecap', payload, 'Hitung rekap mingguan');
         if(!r.ok) return toast(r.error||'Gagal', 'error');
-        toast('Rekap mingguan dihitung/diupdate', 'ok');
+        toast(r.queued ? 'Di-antrikan (offline). Nanti lakukan Sinkronisasi.' : 'Rekap mingguan dihitung/diupdate', r.queued ? 'info' : 'ok');
+        // refresh view
+        await loadWeeklyRecaps();
       }},'Hitung Rekap Mingguan')
     ])
   ]);
   v.appendChild(top);
 
+  const meta = await cacheMeta('daily_logs');
+  v.appendChild(cacheInfoLine_('DailyLogs', meta, ''));
+
   const holder = h('div',{id:'mon_holder'},[]);
   v.appendChild(card([holder]));
 
-  async function loadLogs(){
-    const dDisp = (document.getElementById('mon_date').value||'').trim();
-    const d = dmyToISO(dDisp);
-    if(!d) return toast('Format tanggal harus dd-mm-yyyy', 'error');
-    const q = (document.getElementById('mon_q').value||'').trim();
-    const r = await callApi('getDailyLogs', { date: d, q });
-    if(!r.ok) return toast(r.error||'Gagal', 'error');
-    const items = r.logs||[];
+  // Weekly recap section
+  const recapMeta = await cacheMeta('weekly_recaps');
+  v.appendChild(cacheInfoLine_('WeeklyRecaps', recapMeta, ''));
+  const recapHolder = h('div',{id:'mon_weekly_holder'},[]);
+  v.appendChild(card([
+    h('div',{class:'flex items-center justify-between mb-2'},[
+      h('div',{class:'font-semibold'},'Rekap Mingguan (berdasarkan tanggal yang dipilih)'),
+      h('div',{class:'flex items-center gap-3'},[
+        h('label',{class:'flex items-center gap-2 text-xs text-slate-600 dark:text-slate-300 cursor-pointer select-none'},[
+          h('input',{id:'mon_weekly_all', type:'checkbox', class:'rounded', onchange:()=>loadWeeklyRecaps()}),
+          h('span',{},'Tampilkan semua peserta (0% jika belum ada log)')
+        ]),
+        h('div',{id:'mon_weekly_range', class:'text-xs text-slate-500 dark:text-slate-400'},'')
+      ])
+    ]),
+    recapHolder
+  ]));
+
+  function keyFor_(x){
+    // pastikan ada id stabil untuk cache
+    const pid = String(x.participant_id||'');
+    const dt  = String(x.date||'');
+    return (x.log_id ? String(x.log_id) : (pid && dt ? (pid+'|'+dt) : ('log_'+Math.random().toString(36).slice(2))));
+  }
+
+  function renderTable_(items){
     holder.innerHTML='';
-    holder.appendChild(table(['Tanggal','Peserta','Ton','Mutu','APD','Disiplin','Catatan'], items.map(x=>[
-      isoToDMY(x.date), `${x.participant_name} (${x.participant_nik})`, x.tonnage||'-', x.mutu_grade||'-', badge(x.apd_ok||'-'), x.discipline_score||'-', (x.mentor_note||x.mandor_note||x.assistant_note||'') || '-'
+    if (!items.length) {
+      holder.appendChild(h('div',{class:'text-sm text-slate-500 dark:text-slate-400'}, 'Tidak ada log untuk filter ini.'));
+      return;
+    }
+    holder.appendChild(table(['SRC','Tanggal','Peserta','Ton','Mutu','APD','Disiplin','Catatan'], items.map(x=>[
+      srcBadge_(rowSrc_(x), !!x.__local_pending),
+      isoToDMY(x.date),
+      `${x.participant_name} (${x.participant_nik})`,
+      x.tonnage||'-',
+      x.mutu_grade||'-',
+      badge(x.apd_ok||'-'),
+      x.discipline_score||'-',
+      (x.note || x.mentor_note || x.mandor_note || x.assistant_note || '') || '-'
     ])));
   }
-  await loadLogs();
+
+  function renderWeeklyTable_(items, rangeText=''){
+    const rEl = document.getElementById('mon_weekly_range');
+    if (rEl) rEl.textContent = rangeText || '';
+    recapHolder.innerHTML='';
+    if (!items || !items.length) {
+      recapHolder.appendChild(h('div',{class:'text-sm text-slate-500 dark:text-slate-400'}, 'Belum ada rekap untuk minggu ini. Klik "Hitung Rekap Mingguan".'));
+      return;
+    }
+    recapHolder.appendChild(table(
+      ['SRC','Peserta','Avg Ton','Avg Mutu','Losses','Hadir%','APD%','Disiplin','Reviewed'],
+      items.map(x=>[
+        srcBadge_(rowSrc_(x), !!x.__local_pending),
+        `${x.participant_name || ''} (${x.participant_nik || ''})`,
+        x.avg_tonnage || '-',
+        x.avg_mutu || '-',
+        x.losses_rate || '-',
+        x.attendance_pct || '-',
+        x.apd_pct || '-',
+        x.discipline_avg || '-',
+        x.reviewed_at ? formatDateLongID(x.reviewed_at) : '-'
+      ])
+    ));
+  }
+
+  async function loadWeeklyRecaps(){
+    const dDisp = (document.getElementById('mon_date').value||'').trim();
+    const dateIso = dmyToISO(dDisp);
+    if(!dateIso) return;
+    const pid = currentProgramId_();
+    const includeAll = !!document.getElementById('mon_weekly_all')?.checked;
+
+    // 1) cache first
+    let raw = [];
+    try { raw = await cacheGetAllRaw('weekly_recaps'); } catch(e){ raw = []; }
+    const cached = (raw||[])
+      .map(r => (r && r.data) ? r.data : r)
+      .filter(x => String(x.program_id||'')===String(pid) && String(x.week_start||'') && String(x.week_end||''))
+      // show only the week containing dateIso
+      .filter(x => String(x.week_start||'') <= String(dateIso) && String(x.week_end||'') >= String(dateIso))
+      .map(x => Object.assign({}, x, { __src: x.__src || 'CACHE' }));
+
+    const rangeTextCached = cached.length ? `Periode: ${isoToDMY(cached[0].week_start)} s/d ${isoToDMY(cached[0].week_end)}` : '';
+    renderWeeklyTable_(cached, rangeTextCached);
+
+    // 2) server refresh
+    try{
+      const r = await callApi('listWeeklyRecaps', { program_id: pid, any_date: dateIso, include_all: includeAll ? '1' : '0' });
+      if(!r.ok) throw new Error(r.error||'Gagal');
+      const items = (r.items||[]).map(x => Object.assign({}, x, { program_id: pid, __src:'SERVER', __local_pending:false }));
+      const rangeText = `Periode: ${isoToDMY(r.week_start)} s/d ${isoToDMY(r.week_end)}`;
+
+      // cache upsert
+      for (const row of items) {
+        const id = String(row.recap_id || (String(row.participant_id||'')+'|'+String(row.week_start||'')));
+        if (!id) continue;
+        await cacheUpsert('weekly_recaps', { id, data: row }, { program_id: pid, week_start: r.week_start, week_end: r.week_end });
+      }
+      renderWeeklyTable_(items, rangeText);
+    } catch(e){
+      // stay with cache
+    }
+  }
+
+// ======================
+// FIX: Normalize date from cache/server (Date string -> YYYY-MM-DD)
+// ======================
+function toISODate_(v){
+  const s = String(v || '').trim();
+  if (!s) return '';
+  // already ISO date
+  if (/^\d{4}-\d{2}-\d{2}$/.test(s)) return s;
+
+  // try parse Date string (e.g. "Sat Feb 21 2026 00:00:00 GMT+0700 ...")
+  const d = new Date(s);
+  if (!isNaN(d.getTime())) {
+    // local date (WIB) -> YYYY-MM-DD
+    const yyyy = d.getFullYear();
+    const mm = String(d.getMonth() + 1).padStart(2,'0');
+    const dd = String(d.getDate()).padStart(2,'0');
+    return `${yyyy}-${mm}-${dd}`;
+  }
+
+  // maybe dd-mm-yyyy
+  const iso = dmyToISO(s);
+  if (iso) return iso;
+
+  return '';
 }
 
+function normalizeDailyLogRow_(x){
+  const row = Object.assign({}, x || {});
+  row.date = toISODate_(row.date);
+  // kadang note disimpan ke mentor_note/mandor_note, keep as is
+  row.__src = row.__local_pending ? 'LOCAL' : (row.__src || 'CACHE');
+  return row;
+}
+
+async function loadLogs(){
+  const dDisp = (document.getElementById('mon_date').value||'').trim();
+  const dateIso = dmyToISO(dDisp);
+  if(!dateIso) return toast('Format tanggal harus dd-mm-yyyy', 'error');
+
+  const qDisp = (document.getElementById('mon_q').value||'').trim();
+  const q = qDisp.toLowerCase();
+  const pid = currentProgramId_();
+
+  // 1) CACHE dulu (IndexedDB) -> normalize date dulu baru filter
+  let raw = [];
+  try { raw = await cacheGetAllRaw('daily_logs'); } catch(e){ raw = []; }
+
+  const cached = (raw||[])
+    .map(r => (r && r.data) ? r.data : r)
+    .map(normalizeDailyLogRow_)
+    .filter(x => String(x.program_id||'')===String(pid) && String(x.date||'')===String(dateIso))
+    .filter(x => {
+      if (!q) return true;
+      const nm = String(x.participant_name||'').toLowerCase();
+      const nk = String(x.participant_nik||x.nik||'').toLowerCase();
+      return nm.includes(q) || nk.includes(q);
+    });
+
+  renderTable_(cached);
+  // load weekly recap too
+  try { await loadWeeklyRecaps(); } catch(e) {}
+
+  // 2) SERVER refresh -> normalize date juga, lalu merge, lalu cache
+  try{
+    const r = await callApi('getDailyLogs', { program_id: pid, date: dateIso, q: qDisp });
+    if(!r.ok) throw new Error(r.error||'Gagal');
+
+    const serverRows = (r.logs || []);
+    const server = (serverRows||[])
+      .map(x => Object.assign({}, x, {
+        program_id: pid,
+        __src: 'SERVER',
+        __local_pending: false
+      }))
+      .map(normalizeDailyLogRow_)
+      .filter(x => x.date); // pastikan date valid
+
+    // merge: pertahankan LOCAL pending jika ada
+    function keyFlex_(x){
+      const a = String(x?.log_id||'').trim();
+      if (a) return a;
+
+      const pid2 = String(x?.participant_id||'').trim();
+      const dt2  = String(toISODate_(x?.date)||'').trim(); // normalize date for key
+      return (pid2 && dt2) ? (pid2 + '|' + dt2) : '';
+    }
+
+    const cached2 = (cached||[])
+      .map(x => Object.assign({}, x, { __merge_id: keyFlex_(x) }))
+      .filter(x=>x.__merge_id);
+
+    const server2 = (server||[])
+      .map(x => Object.assign({}, x, { __merge_id: keyFlex_(x) }))
+      .filter(x=>x.__merge_id);
+
+    const merged = mergeLocalFirst_(cached2, server2, '__merge_id');
+
+    // upsert semua merged ke IndexedDB (id = log_id kalau ada; fallback merge key)
+    for (const row of merged) {
+      const id = String(row.log_id || row.__merge_id || '');
+      if (!id) continue;
+      const clean = Object.assign({}, row);
+      delete clean.__merge_id;
+      // FIX: simpan date sudah ISO
+      clean.date = toISODate_(clean.date);
+      await cacheUpsert('daily_logs', { id, data: clean }, { program_id: pid });
+    }
+
+    renderTable_(merged.map(x=>{
+      const y = Object.assign({}, x);
+      y.date = toISODate_(y.date);
+      return y;
+    }));
+
+  } catch(e){
+    toast('Offline: ' + (e.message||e), 'info');
+  }
+}
+}
 async function openDailyLogModal() {
+  // Load dropdown data
+  let parts = [];
+  let mentors = [];
+  // cache first
+  try {
+    const pid = currentProgramId_();
+    parts = await cacheGetAll('participants', { program_id: pid });
+    mentors = await cacheGetAll('mentors', { program_id: pid });
+    if (state.user?.role==='MENTOR') parts = (parts||[]).filter(x=>String(x.category||'').toUpperCase()==='B');
+  } catch(e) {}
 
-// Load dropdown data
-let parts = [];
-let mentors = [];
-try {
-  const pr = await callApi('lookupParticipants', (state.user?.role==='MENTOR') ? { category:'B' } : {});
-  if (pr.ok) parts = pr.items||[];
-  const mr = await callApi('lookupMentors', {});
-  if (mr.ok) mentors = mr.items||[];
-} catch (e) {}
+  try {
+    const pid = currentProgramId_();
+    const pr = await callApi('lookupParticipants', (state.user?.role==='MENTOR') ? { program_id: pid, category:'B' } : { program_id: pid });
+    if (pr.ok) parts = pr.items||[];
+    const mr = await callApi('lookupMentors', { program_id: pid });
+    if (mr.ok) mentors = mr.items||[];
+  } catch (e) {}
 
-  const overlay = h('div', { class:'fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/40' }, []);
-  const modal = card([
-    h('div',{class:'text-lg font-semibold'},'Input Log Harian'),
-    h('div',{class:'mt-4 grid md:grid-cols-2 gap-3'},[
-h('div',{},[
-  h('label',{class:'text-sm text-slate-600 dark:text-slate-300'},'Peserta'),
-  h('select',{id:'dl_participant', class:'mt-1 w-full rounded-2xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 px-3 py-3 text-sm'},[
-    h('option',{value:''},'-- Pilih Peserta --')
-  ]),
-  h('div',{class:'text-xs text-slate-500 dark:text-slate-400 mt-1'},'Data peserta diambil dari program aktif')
-]),
-      h('div',{},[
-        h('label',{class:'text-sm text-slate-600 dark:text-slate-300'},'Tanggal'),
-        h('input',{id:'dl_date', value:todayDMY(), placeholder:'dd-mm-yyyy', inputmode:'numeric', class:'mt-1 w-full rounded-2xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 px-3 py-3 text-sm'})
+  const { body, close } = openModal_({
+    title: 'Input Log Harian',
+    subtitle: 'Header tetap, isi form bisa di-scroll.',
+    maxWidth: 'max-w-3xl'
+  });
+
+  body.appendChild(h('div',{class:'grid md:grid-cols-2 gap-3'},[
+    h('div',{},[
+      h('label',{class:'text-sm text-slate-600 dark:text-slate-300'},'Peserta'),
+      h('select',{id:'dl_participant', class:'mt-1 w-full rounded-2xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 px-3 py-3 text-sm'},[
+        h('option',{value:''},'-- Pilih Peserta --')
       ]),
-h('div',{},[
-  h('label',{class:'text-sm text-slate-600 dark:text-slate-300'},'Mentor (otomatis dari pairing jika ada)'),
-  h('select',{id:'dl_mentor', class:'mt-1 w-full rounded-2xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 px-3 py-3 text-sm'},[
-    h('option',{value:''},'-- Auto / Pilih Mentor --')
-  ])
-]),
-      field2('Attendance','dl_att','HADIR'),
-      field2('Tonnage (ton/HK)','dl_ton','1.0'),
-      field2('Mutu/Grading','dl_mutu',''),
-      field2('Losses/Brondolan','dl_loss',''),
-      h('div',{},[
-        h('label',{class:'text-sm text-slate-600 dark:text-slate-300'},'APD OK'),
-        h('select',{id:'dl_apd', class:'mt-1 w-full rounded-2xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 px-3 py-3 text-sm'},[
-          h('option',{value:'TRUE'},'TRUE'),
-          h('option',{value:'FALSE'},'FALSE'),
-        ])
-      ]),
-      field2('Disiplin (0-100)','dl_dis','80'),
-      h('div',{class:'md:col-span-2'},[
-        h('label',{class:'text-sm text-slate-600 dark:text-slate-300'},'Catatan'),
-        h('textarea',{id:'dl_note', rows:'2', class:'mt-1 w-full rounded-2xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 px-3 py-3 text-sm'}, '')
-      ]),
+      h('div',{class:'text-xs text-slate-500 dark:text-slate-400 mt-1'},'Data peserta diambil dari program aktif')
     ]),
-    h('div',{class:'mt-5 flex justify-end gap-2'},[
-      h('button',{class:'rounded-2xl px-4 py-2 text-sm border border-slate-200 dark:border-slate-800', onclick:()=>overlay.remove()},'Batal'),
-      h('button',{id:'btnSaveDL', class:'rounded-2xl px-4 py-2 text-sm bg-emerald-600 text-white hover:bg-emerald-700 flex items-center gap-2'},[
-        h('span',{'data-spinner':'', class:'hidden w-4 h-4 border-2 border-white/40 border-t-white rounded-full animate-spin'}),
-        h('span',{'data-label':'','data-orig':'Simpan'},'Simpan')
+    h('div',{},[
+      h('label',{class:'text-sm text-slate-600 dark:text-slate-300'},'Tanggal'),
+      h('input',{id:'dl_date', value:todayDMY(), placeholder:'dd-mm-yyyy', inputmode:'numeric', class:'mt-1 w-full rounded-2xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 px-3 py-3 text-sm'})
+    ]),
+    h('div',{},[
+      h('label',{class:'text-sm text-slate-600 dark:text-slate-300'},'Mentor (otomatis dari pairing jika ada)'),
+      h('select',{id:'dl_mentor', class:'mt-1 w-full rounded-2xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 px-3 py-3 text-sm'},[
+        h('option',{value:''},'-- Auto / Pilih Mentor --')
       ])
+    ]),
+    field2('Attendance','dl_att','HADIR'),
+    field2('Tonnage (ton/HK)','dl_ton','1.0'),
+    field2('Mutu/Grading','dl_mutu',''),
+    field2('Losses/Brondolan','dl_loss',''),
+    h('div',{},[
+      h('label',{class:'text-sm text-slate-600 dark:text-slate-300'},'APD OK'),
+      h('select',{id:'dl_apd', class:'mt-1 w-full rounded-2xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 px-3 py-3 text-sm'},[
+        h('option',{value:'TRUE'},'TRUE'),
+        h('option',{value:'FALSE'},'FALSE'),
+      ])
+    ]),
+    field2('Disiplin (0-100)','dl_dis','80'),
+    h('div',{class:'md:col-span-2'},[
+      h('label',{class:'text-sm text-slate-600 dark:text-slate-300'},'Catatan'),
+      h('textarea',{id:'dl_note', rows:'2', class:'mt-1 w-full rounded-2xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 px-3 py-3 text-sm'}, '')
+    ]),
+  ]));
+
+  body.appendChild(h('div',{class:'mt-5 flex justify-end gap-2'},[
+    h('button',{class:'rounded-2xl px-4 py-2 text-sm border border-slate-200 dark:border-slate-800', onclick: close},'Batal'),
+    h('button',{id:'btnSaveDL', class:'rounded-2xl px-4 py-2 text-sm bg-emerald-600 text-white hover:bg-emerald-700 flex items-center gap-2'},[
+      h('span',{'data-spinner':'', class:'hidden w-4 h-4 border-2 border-white/40 border-t-white rounded-full animate-spin'}),
+      h('span',{'data-label':'','data-orig':'Simpan'},'Simpan')
     ])
-  ]);
-  modal.classList.add('w-full','max-w-3xl');
-  overlay.appendChild(modal);
-  document.body.appendChild(overlay);
+  ]));
 
   // Populate dropdowns
   const selP = document.getElementById('dl_participant');
@@ -1604,9 +2379,11 @@ h('div',{},[
     try{
       const dateIso = dmyToISO(v('dl_date'));
       if(!dateIso) throw new Error('Format tanggal harus dd-mm-yyyy');
-      const r = await callApi('submitDailyLog', {
+      const payload = {
+        program_id: currentProgramId_(),
         participant_id: v('dl_participant'),
-        date: dateIso,
+        mentor_id: v('dl_mentor'),
+        date: dateIso, // ✅ pastikan ISO dari awal
         attendance: v('dl_att'),
         tonnage: v('dl_ton'),
         mutu_grade: v('dl_mutu'),
@@ -1614,10 +2391,36 @@ h('div',{},[
         apd_ok: v('dl_apd'),
         discipline_score: v('dl_dis'),
         note: (document.getElementById('dl_note').value||'').trim()
-      });
+      };
+
+      // ✅ buat payload2 dulu baru dipakai
+      const log_id = (crypto?.randomUUID ? crypto.randomUUID() : ('log_' + Date.now() + '_' + Math.random().toString(36).slice(2)));
+      const payload2 = Object.assign({ log_id }, payload);
+
+      const r = await callOrQueue(() => callApi('submitDailyLog', payload2), 'submitDailyLog', payload2, 'Simpan daily log');
       if(!r.ok) throw new Error(r.error||'Gagal');
-      toast('Log tersimpan','ok');
-      overlay.remove();
+
+      // optimistic cache update
+      const pidCtx = currentProgramId_();
+      await cacheUpsert(
+        'daily_logs',
+        {
+          id: String(log_id),
+          data: Object.assign(
+            {
+              log_id,
+              program_id: pidCtx,
+              date: dateIso,   
+              __local_pending: !!r.queued,
+              __src: (r.queued ? 'LOCAL' : 'SERVER')
+            },
+            payload2
+          )
+        },
+        { program_id: pidCtx }
+      );
+      toast(r.queued ? 'Di-antrikan (offline). Nanti lakukan Sinkronisasi.' : 'Log tersimpan', 'ok');
+      close();
     }catch(e){ toast(e.message,'error'); }
     finally{ btnBusy(btn,false,'Simpan'); }
   };
@@ -1631,20 +2434,210 @@ h('div',{},[
   function v(id){ return (document.getElementById(id).value||'').trim(); }
 }
 
+
 async function renderGraduation() {
+  if (String(currentProgramId_()||'') === '__ALL__') {
+    toast('Silakan pilih program tertentu (bukan "Semua Program") untuk menu ini.', 'info');
+    return renderDashboard();
+  }
+
   const v = setViewTitle('Kelulusan', 'Set keputusan LULUS / TIDAK LULUS berdasarkan monitoring');
-  const r = await callApi('listGraduation', {});
-  if(!r.ok) return v.appendChild(card([h('div',{class:'text-rose-600'}, r.error||'Gagal')]));
-  const items = r.items||[];
-  v.appendChild(card([
-    table(['Peserta','Status','Keputusan','Aksi'], items.map(it=>[
-      `${it.name} (${it.nik})`,
-      badge(it.status||'-'),
-      badge(it.decision||'-'),
-      h('button',{class:'rounded-xl px-3 py-2 text-xs bg-emerald-600 text-white', onclick:()=>openGradModal(it)},'Putuskan')
-    ]))
-  ]));
+  const pid = currentProgramId_();
+
+  const info = h('div',{class:'mb-3 text-xs text-slate-500 dark:text-slate-400'},'Memuat dari cache...');
+  v.appendChild(info);
+
+  // ===== Rekap Bulanan =====
+  const now = new Date();
+  const monthDefault = `${now.getFullYear()}-${String(now.getMonth()+1).padStart(2,'0')}`;
+  const monthTop = h('div',{class:'grid md:grid-cols-4 gap-3 mb-3'},[
+    h('div',{},[
+      h('label',{class:'text-sm text-slate-600 dark:text-slate-300'},'Bulan (Rekap Bulanan)'),
+      h('input',{id:'grad_month', type:'month', value: monthDefault, class:'mt-1 w-full rounded-2xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 px-3 py-3 text-sm'})
+    ]),
+    h('div',{class:'flex items-end gap-2'},[
+      h('button',{class:'rounded-2xl px-4 py-3 bg-emerald-600 text-white hover:bg-emerald-700 text-sm', onclick:()=>loadMonthlyRecap()},'Muat Rekap Bulanan'),
+      h('button',{class:'rounded-2xl px-4 py-3 border border-slate-200 dark:border-slate-800 text-sm', onclick:()=>loadFinalRecap()},'Muat Rekap Akhir Program')
+    ]),
+    h('div',{class:'md:col-span-2 flex items-end'},[
+      h('div',{id:'grad_period', class:'text-xs text-slate-500 dark:text-slate-400'},'')
+    ])
+  ]);
+  v.appendChild(monthTop);
+
+  const monthlyInfo = h('div',{class:'mb-2 text-xs text-slate-500 dark:text-slate-400'},'Rekap bulanan: memuat...');
+  v.appendChild(monthlyInfo);
+  const monthlyHolder = h('div',{},[card([h('div',{class:'text-sm text-slate-500 dark:text-slate-400'},'Memuat...')])]);
+  v.appendChild(monthlyHolder);
+
+  const finalInfo = h('div',{class:'mt-4 mb-2 text-xs text-slate-500 dark:text-slate-400'},'Rekap akhir program: memuat...');
+  v.appendChild(finalInfo);
+  const finalHolder = h('div',{},[card([h('div',{class:'text-sm text-slate-500 dark:text-slate-400'},'Memuat...')])]);
+  v.appendChild(finalHolder);
+
+  const host = h('div',{},[
+    card([ h('div',{class:'text-sm text-slate-500 dark:text-slate-400'},'Memuat...') ])
+  ]);
+  v.appendChild(host);
+
+  function monthAnyDate_(){
+    const m = String(document.getElementById('grad_month')?.value||'').trim();
+    if(!m) return '';
+    // gunakan tanggal 15 agar aman
+    return `${m}-15`;
+  }
+
+  function renderMonthly_(items, rangeText){
+    monthlyHolder.innerHTML='';
+    if (!items || !items.length) {
+      monthlyHolder.appendChild(card([h('div',{class:'text-sm text-slate-500 dark:text-slate-400'},'Tidak ada data rekap bulanan (atau belum ada log).') ]));
+      return;
+    }
+    monthlyHolder.appendChild(card([
+      h('div',{class:'flex items-center justify-between mb-2'},[
+        h('div',{class:'font-semibold'},'Rekap Bulanan'),
+        h('div',{class:'text-xs text-slate-500 dark:text-slate-400'}, rangeText||'')
+      ]),
+      table(['SRC','Peserta','Total Log','Avg Ton','Avg Mutu','Losses','Hadir%','APD%','Disiplin'],
+        items.map(x=>[
+          srcBadge_(rowSrc_(x), !!x.__local_pending),
+          `${x.participant_name||''} (${x.participant_nik||''})`,
+          x.total_logs||'0',
+          x.avg_tonnage||'-',
+          x.avg_mutu||'-',
+          x.losses_rate||'-',
+          x.attendance_pct||'0',
+          x.apd_pct||'0',
+          x.discipline_avg||'-'
+        ])
+      )
+    ]));
+  }
+
+  function renderFinal_(items, rangeText){
+    finalHolder.innerHTML='';
+    if (!items || !items.length) {
+      finalHolder.appendChild(card([h('div',{class:'text-sm text-slate-500 dark:text-slate-400'},'Tidak ada peserta pada program ini.') ]));
+      return;
+    }
+    finalHolder.appendChild(card([
+      h('div',{class:'flex items-center justify-between mb-2'},[
+        h('div',{class:'font-semibold'},'Rekap Akhir Program'),
+        h('div',{class:'text-xs text-slate-500 dark:text-slate-400'}, rangeText||'')
+      ]),
+      table(['SRC','Peserta','Total Log','Avg Ton','Avg Mutu','Losses','Hadir%','APD%','Disiplin','Rekom','Keputusan','Aksi'],
+        items.map(x=>[
+          srcBadge_(rowSrc_(x), !!x.__local_pending),
+          `${x.participant_name||''} (${x.participant_nik||''})`,
+          x.total_logs||'0',
+          x.avg_tonnage||'-',
+          x.avg_mutu||'-',
+          x.losses_rate||'-',
+          x.attendance_pct||'0',
+          x.apd_pct||'0',
+          x.discipline_avg||'-',
+          badge(x.recommended||'-'),
+          badge(x.decision||'-'),
+          h('button',{class:'rounded-xl px-3 py-2 text-xs bg-emerald-600 text-white', onclick:()=>openGradModal({
+            participant_id: x.participant_id,
+            nik: x.participant_nik,
+            name: x.participant_name,
+            status: x.status||''
+          })},'Putuskan')
+        ])
+      )
+    ]));
+  }
+
+  async function loadMonthlyRecap(){
+    const anyDate = monthAnyDate_();
+    if(!anyDate) return toast('Pilih bulan dulu','error');
+
+    // cache first
+    let raw = [];
+    try { raw = await cacheGetAllRaw('monthly_recaps'); } catch(e){ raw = []; }
+    const cached = (raw||[])
+      .map(r => (r && r.data) ? r.data : r)
+      .filter(x => String(x.program_id||'')===String(pid) && String(x.month||'')===String(anyDate).slice(0,7))
+      .map(x => Object.assign({}, x, { __src: x.__src || 'CACHE' }));
+    const rangeCached = cached.length ? `Periode: ${isoToDMY(cached[0].month_start)} s/d ${isoToDMY(cached[0].month_end)}` : '';
+    renderMonthly_(cached, rangeCached);
+
+    // server refresh
+    try{
+      const r = await callApi('listMonthlyRecaps', { program_id: pid, any_date: anyDate, include_all:'1' });
+      if(!r.ok) throw new Error(r.error||'Gagal');
+      const items = (r.items||[]).map(x => Object.assign({}, x, { program_id: pid, __src:'SERVER', __local_pending:false }));
+      const rangeText = `Periode: ${isoToDMY(r.month_start)} s/d ${isoToDMY(r.month_end)}`;
+      for (const row of items) {
+        const id = String(row.recap_id || (String(row.participant_id||'')+'|'+String(row.month||'')));
+        if (!id) continue;
+        await cacheUpsert('monthly_recaps', { id, data: row }, { program_id: pid, month: r.month });
+      }
+      renderMonthly_(items, rangeText);
+      monthlyInfo.textContent = `Rekap bulanan: SERVER • ${items.length} baris`;
+    }catch(e){
+      monthlyInfo.textContent = `Rekap bulanan: CACHE (offline)${cached.length ? '' : ' • (belum ada cache)'} `;
+    }
+  }
+
+  async function loadFinalRecap(){
+    // cache first
+    let raw = [];
+    try { raw = await cacheGetAllRaw('final_recaps'); } catch(e){ raw = []; }
+    const cached = (raw||[])
+      .map(r => (r && r.data) ? r.data : r)
+      .filter(x => String(x.program_id||'')===String(pid))
+      .map(x => Object.assign({}, x, { __src: x.__src || 'CACHE' }));
+    const rangeCached = cached.length ? `Periode: ${isoToDMY(cached[0].period_start)} s/d ${isoToDMY(cached[0].period_end)}` : '';
+    renderFinal_(cached, rangeCached);
+
+    // server refresh
+    try{
+      const r = await callApi('listFinalRecap', { program_id: pid });
+      if(!r.ok) throw new Error(r.error||'Gagal');
+      const items = (r.items||[]).map(x => Object.assign({}, x, { program_id: pid, __src:'SERVER', __local_pending:false }));
+      const rangeText = `Periode: ${isoToDMY(r.period_start)} s/d ${isoToDMY(r.period_end)}`;
+      const pEl = document.getElementById('grad_period');
+      if (pEl) pEl.textContent = rangeText;
+      for (const row of items) {
+        const id = String(row.participant_id||'');
+        if (!id) continue;
+        await cacheUpsert('final_recaps', { id, data: row }, { program_id: pid, period_start: r.period_start, period_end: r.period_end });
+      }
+      renderFinal_(items, rangeText);
+      finalInfo.textContent = `Rekap akhir program: SERVER • ${items.length} baris`;
+    }catch(e){
+      finalInfo.textContent = `Rekap akhir program: CACHE (offline)${cached.length ? '' : ' • (belum ada cache)'}`;
+    }
+  }
+
+  localFirstHydrateList_({
+    store:'graduations',
+    fetchFn: ()=> callApi('listGraduation', {}),
+    filter:{ program_id: pid },
+    idKey:'participant_id',
+    serverPickKey:'items',
+    viewToken: ()=> state.viewKey === 'graduation',
+    onUpdate: ({ items, from, meta, error, refreshing })=>{
+      info.textContent = `Cache Kelulusan: ${meta?.ts ? new Date(meta.ts).toLocaleString('id-ID') : '-'} • ${refreshing ? 'refresh...' : (from==='server' ? 'SERVER refresh' : 'CACHE only')}${error ? (' • Offline: ' + error) : ''}`;
+      const rows = (items||[]).map(it=>[
+        srcBadge_(rowSrc_(it), !!it.__local_pending),
+        `${it.name} (${it.nik})`,
+        badge(it.status||'-'),
+        badge(it.decision||'-'),
+        h('button',{class:'rounded-xl px-3 py-2 text-xs bg-emerald-600 text-white', onclick:()=>openGradModal(it)},'Putuskan')
+      ]);
+      host.innerHTML='';
+      host.appendChild(card([ table(['SRC','Peserta','Status','Keputusan','Aksi'], rows) ]));
+    }
+  });
+
+  // initial load
+  try { await loadMonthlyRecap(); } catch(e){}
+  try { await loadFinalRecap(); } catch(e){}
 }
+
 
 function openGradModal(it){
   const overlay = h('div', { class:'fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/40' }, []);
@@ -1681,8 +2674,14 @@ function openGradModal(it){
     try{
       const decision = (document.getElementById('g_dec').value||'').trim();
       const reason = (document.getElementById('g_reason').value||'').trim();
-      const r = await callApi('graduateParticipant', { participant_id: it.participant_id, decision, reason });
+      const payload = { participant_id: it.participant_id, decision, reason };
+      const r = await callOrQueue(() => callApi('graduateParticipant', payload), 'graduateParticipant', payload, 'Kelulusan');
       if(!r.ok) throw new Error(r.error||'Gagal');
+
+      // optimistic cache
+      const pidCtx = currentProgramId_();
+      const merged = Object.assign({}, it, {  decision, reason,  updated_at: new Date().toISOString(),  __local_pending: !!r.queued,  __src: (r.queued ? 'LOCAL' : 'SERVER')});
+      await cacheUpsert('graduations', { id: String(it.participant_id), data: merged }, { program_id: pidCtx });
       toast('Keputusan disimpan','ok');
       overlay.remove();
       renderGraduation();
@@ -1691,80 +2690,169 @@ function openGradModal(it){
   };
 }
 
+
 async function renderCertificates(){
+  if (String(currentProgramId_()||'') === '__ALL__') {
+    toast('Silakan pilih program tertentu (bukan "Semua Program") untuk menu ini.', 'info');
+    return renderDashboard();
+  }
+
   const v = setViewTitle('Sertifikat', 'Terbitkan sertifikat peserta & mentor');
-  const r = await callApi('listCertificates', {});
-  const isAdmin = (state.user?.role === 'ADMIN');
-  const top = h('div',{class:'flex gap-2 mb-4'},[
+  const pid = currentProgramId_();
+
+  const info = h('div',{class:'mb-3 text-xs text-slate-500 dark:text-slate-400'},'Memuat dari cache...');
+  v.appendChild(info);
+
+  const top = h('div',{class:'flex flex-wrap gap-2 mb-4'},[
     h('button',{class:'rounded-2xl px-4 py-2 bg-emerald-600 text-white hover:bg-emerald-700 text-sm', onclick:async ()=>{
-      const pid = prompt('participant_id untuk terbitkan sertifikat peserta:','');
-      if(!pid) return;
-      const rr = await callApi('issueCertificate', { person_type:'PESERTA', person_id: pid });
+      const pidP = prompt('participant_id untuk terbitkan sertifikat peserta:','');
+      if(!pidP) return;
+      const payload = { person_type:'PESERTA', person_id: pidP };
+      const rr = await callOrQueue(() => callApi('issueCertificate', payload), 'issueCertificate', payload, 'Terbitkan Sertifikat');
       if(!rr.ok) return toast(rr.error||'Gagal','error');
-      toast('Sertifikat peserta diterbitkan','ok');
+
+      const pidCtx = currentProgramId_();
+      const localCertId = 'loc_cert_' + Date.now() + '_' + Math.random().toString(36).slice(2);
+      await cacheUpsert('certificates', { id: localCertId, data: {
+        cert_id: localCertId,
+        program_id: pidCtx,
+        person_type: 'PESERTA',
+        person_id: pidP,
+        certificate_no: rr.certificate_no || '',
+        verify_code: rr.verify_code || '',
+        issue_date: formatDateISO(new Date()),
+        pdf_url: rr.pdf_url || '',
+        __local_pending: !!rr.queued,
+        __src: (rr.queued?'LOCAL':'SERVER')
+      }}, { program_id: pidCtx });
+
+      toast(rr.queued ? 'Di-antrikan (offline).' : 'Sertifikat peserta diterbitkan','ok');
       renderCertificates();
     }},'Terbitkan Sertifikat Peserta'),
+
     h('button',{class:'rounded-2xl px-4 py-2 border border-slate-200 dark:border-slate-800 text-sm', onclick:async ()=>{
       const mid = prompt('mentor_id untuk terbitkan sertifikat mentor:','');
       if(!mid) return;
-      const rr = await callApi('issueCertificate', { person_type:'MENTOR', person_id: mid });
+      const payload = { person_type:'MENTOR', person_id: mid };
+      const rr = await callOrQueue(() => callApi('issueCertificate', payload), 'issueCertificate', payload, 'Terbitkan Sertifikat');
       if(!rr.ok) return toast(rr.error||'Gagal','error');
-      toast('Sertifikat mentor diterbitkan','ok');
+
+      const pidCtx = currentProgramId_();
+      const localCertId = 'loc_cert_' + Date.now() + '_' + Math.random().toString(36).slice(2);
+      await cacheUpsert('certificates', { id: localCertId, data: {
+        cert_id: localCertId,
+        program_id: pidCtx,
+        person_type: 'MENTOR',
+        person_id: mid,
+        certificate_no: rr.certificate_no || '',
+        verify_code: rr.verify_code || '',
+        issue_date: formatDateISO(new Date()),
+        pdf_url: rr.pdf_url || '',
+        __local_pending: !!rr.queued,
+        __src: (rr.queued?'LOCAL':'SERVER')
+      }}, { program_id: pidCtx });
+
+      toast(rr.queued ? 'Di-antrikan (offline).' : 'Sertifikat mentor diterbitkan','ok');
       renderCertificates();
     }},'Terbitkan Sertifikat Mentor'),
+
     h('button',{class:'rounded-2xl px-4 py-2 border border-slate-200 dark:border-slate-800 text-sm', onclick:()=>renderCertificates()},'Refresh'),
   ]);
   v.appendChild(top);
 
-  if(!r.ok) return v.appendChild(card([h('div',{class:'text-rose-600'}, r.error||'Gagal')]));
-  const items = r.items||[];
-  v.appendChild(card([
-    table(['No','Tipe','Nama','Tanggal','Aksi'], items.map(x=>{
-      const verifyUrl = `${CONFIG.GAS_URL_EXEC}?action=verifyCert&code=${encodeURIComponent(x.verify_code||x.certificate_no||'')}&format=html`;
-      return [
+  const host = h('div',{},[
+    card([ h('div',{class:'text-sm text-slate-500 dark:text-slate-400'},'Memuat...') ])
+  ]);
+  v.appendChild(host);
+
+  localFirstHydrateList_({
+    store:'certificates',
+    fetchFn: ()=> callApi('listCertificates', {}),
+    filter:{ program_id: pid },
+    idKey:'cert_id',
+    serverPickKey:'items',
+    viewToken: ()=> state.viewKey === 'certificates',
+    onUpdate: ({ items, from, meta, error, refreshing })=>{
+      info.textContent = `Cache Sertifikat: ${meta?.ts ? new Date(meta.ts).toLocaleString('id-ID') : '-'} • ${refreshing ? 'refresh...' : (from==='server' ? 'SERVER refresh' : 'CACHE only')}${error ? (' • Offline: ' + error) : ''}`;
+
+      const rows = (items||[]).map(x=>[
+        srcBadge_(rowSrc_(x), !!x.__local_pending),
+        x.person_type||'-',
+        x.person_id||'-',
         x.certificate_no||'-',
-        badge(x.person_type||'-'),
-        `${x.name||'-'} (${x.nik||'-'})`,
-        isoToDMY(x.issue_date||'-'),
-        h('div',{class:'flex flex-wrap gap-2'},[
-          x.pdf_url ? h('a',{href:x.pdf_url, target:'_blank', rel:'noopener', class:'rounded-xl px-3 py-2 text-xs bg-emerald-600 text-white hover:bg-emerald-700'},'PDF') : h('span',{class:'text-xs text-slate-400'},'—'),
-          h('a',{href:verifyUrl, target:'_blank', rel:'noopener', class:'rounded-xl px-3 py-2 text-xs border border-slate-200 dark:border-slate-800'},'Verifikasi'),
-          isAdmin ? h('button',{class:'rounded-xl px-3 py-2 text-xs bg-slate-900 text-white dark:bg-slate-100 dark:text-slate-900', onclick:async ()=>{
-            const ok = confirm('Regenerate PDF sertifikat ini? (Template terbaru akan dipakai)');
-            if(!ok) return;
-            const rr = await callApi('regenerateCertificatePdf', { cert_id: x.cert_id });
-            if(!rr.ok) return toast(rr.error||'Gagal','error');
-            toast('PDF di-regenerate','ok');
-            renderCertificates();
-          }},'Re-generate PDF') : null,
-        ].filter(Boolean))
-      ];
-    }))
-  ]));
+        x.issue_date ? formatDateDMYID(x.issue_date) : '-',
+        x.pdf_url ? h('a',{href:x.pdf_url, target:'_blank', class:'text-emerald-700 dark:text-emerald-300 underline'},'PDF') : '-'
+      ]);
+
+      host.innerHTML='';
+      host.appendChild(card([ table(['SRC','Tipe','ID','No Sertifikat','Tanggal','File'], rows) ]));
+    }
+  });
 }
 
+
+
 async function renderIncentives(){
+  if (String(currentProgramId_()||'') === '__ALL__') {
+    toast('Silakan pilih program tertentu (bukan "Semua Program") untuk menu ini.', 'info');
+    return renderDashboard();
+  }
+
   const v = setViewTitle('Insentif Mentor', 'Tracking & verifikasi insentif');
-  const r = await callApi('listMentorIncentives', {});
-  if(!r.ok) return v.appendChild(card([h('div',{class:'text-rose-600'}, r.error||'Gagal')]));
-  const items = r.items||[];
-  v.appendChild(card([
-    table(['Mentor','Mentee','Stage','Amount','Due','Status','Aksi'], items.map(x=>[
-      x.mentor_name||'-',
-      x.participant_name||'-',
-      badge(x.stage||'-'),
-      x.amount||'-',
-      x.due_date||'-',
-      badge(x.status||'-'),
-      h('button',{class:'rounded-xl px-3 py-2 text-xs border border-slate-200 dark:border-slate-800', onclick:async ()=>{
-        const rr = await callApi('verifyIncentive', { incentive_id: x.incentive_id, status:'VERIFIED' });
-        if(!rr.ok) return toast(rr.error||'Gagal','error');
-        toast('Terverifikasi','ok');
-        renderIncentives();
-      }},'Verify')
-    ]))
-  ]));
+  const pid = currentProgramId_();
+
+  const info = h('div',{class:'mb-3 text-xs text-slate-500 dark:text-slate-400'},'Memuat dari cache...');
+  v.appendChild(info);
+
+  const host = h('div',{},[
+    card([ h('div',{class:'text-sm text-slate-500 dark:text-slate-400'},'Memuat...') ])
+  ]);
+  v.appendChild(host);
+
+  localFirstHydrateList_({
+    store:'incentives',
+    fetchFn: ()=> callApi('listMentorIncentives', {}),
+    filter:{ program_id: pid },
+    idKey:'incentive_id',
+    serverPickKey:'items',
+    viewToken: ()=> state.viewKey === 'incentives',
+    onUpdate: ({ items, from, meta, error, refreshing })=>{
+      info.textContent = `Cache Insentif: ${meta?.ts ? new Date(meta.ts).toLocaleString('id-ID') : '-'} • ${refreshing ? 'refresh...' : (from==='server' ? 'SERVER refresh' : 'CACHE only')}${error ? (' • Offline: ' + error) : ''}`;
+
+      const rows = (items||[]).map(x=>[
+        srcBadge_(rowSrc_(x), !!x.__local_pending),
+        x.mentor_name||'-',
+        x.participant_name||'-',
+        badge(x.stage||'-'),
+        x.amount||'-',
+        x.due_date||'-',
+        badge(x.status||'-'),
+        h('button',{class:'rounded-xl px-3 py-2 text-xs border border-slate-200 dark:border-slate-800', onclick:async ()=>{
+          const payload = { incentive_id: x.incentive_id, status:'VERIFIED' };
+          const rr = await callOrQueue(() => callApi('verifyIncentive', payload), 'verifyIncentive', payload, 'Verify insentif');
+          if(!rr.ok) return toast(rr.error||'Gagal','error');
+
+          const pidCtx = currentProgramId_();
+          const merged = Object.assign({}, x, {
+            status:'VERIFIED',
+            verified_by: state.user?.nik||'',
+            verified_at: new Date().toISOString(),
+            __local_pending: !!rr.queued,
+            __src: (rr.queued?'LOCAL':'SERVER')
+          });
+          await cacheUpsert('incentives', { id:String(x.incentive_id), data: merged }, { program_id: pidCtx });
+
+          toast(rr.queued ? 'Di-antrikan (offline)' : 'Terverifikasi','ok');
+          renderIncentives();
+        }},'Verify')
+      ]);
+
+      host.innerHTML='';
+      host.appendChild(card([ table(['SRC','Mentor','Mentee','Stage','Amount','Due','Status','Aksi'], rows) ]));
+    }
+  });
 }
+
 
 async function renderMyMentee(){
   const v = setViewTitle('Mentee Saya', 'Daftar mentee untuk mentor');
@@ -1786,8 +2874,28 @@ async function renderSettings(){
   const isAdmin = (state.user?.role === 'ADMIN');
   const v = setViewTitle('Pengaturan', isAdmin ? 'Konfigurasi aplikasi, logo, dan user' : 'Ganti PIN Anda');
 
-  const r = await callApi('getSettings', {});
-  const settings = (r && r.ok) ? (r.settings || {}) : {};
+  async function loadSettingsCached_(estateCode=''){
+    const id = 'settings:' + (estateCode || '__GLOBAL__');
+    const rows = await cacheGetAll('settings');
+    const hit = rows.find(x => String(x.__estate||'')===String(estateCode||'')) || rows.find(x => String(x.__estate||'')==='' ) || null;
+    if (hit) return hit;
+    const byId = rows.find(x => String(x.id||'')===id) || null;
+    return byId || {};
+  }
+
+  let settings = {};
+  try {
+    const r = await callApi('getSettings', {});
+    if (r && r.ok) {
+      settings = r.settings || {};
+      if (isAdmin) {
+        await cacheUpsert('settings', { id:'settings:__GLOBAL__', data: Object.assign({ __estate:'' }, settings) });
+      }
+    }
+  } catch (e) {
+    const cached = await loadSettingsCached_('');
+    settings = cached || {};
+  }
 
   // Change PIN (all roles)
   const pinCard = card([
@@ -1816,9 +2924,10 @@ async function renderSettings(){
     const btn = document.getElementById('btnPin');
     btnBusy(btn,true,'Menyimpan...');
     try{
-      const rr = await callApi('changeMyPin', { old_pin: (document.getElementById('sp_old').value||'').trim(), new_pin: (document.getElementById('sp_new').value||'').trim() });
+      const payload = { old_pin: (document.getElementById('sp_old').value||'').trim(), new_pin: (document.getElementById('sp_new').value||'').trim() };
+      const rr = await callOrQueue(() => callApi('changeMyPin', payload), 'changeMyPin', payload, 'Ganti PIN');
       if(!rr.ok) throw new Error(rr.error||'Gagal');
-      toast('PIN berhasil diganti','ok');
+      toast(rr.queued ? 'Permintaan ganti PIN di-antrikan (offline)' : 'PIN berhasil diganti','ok');
       document.getElementById('sp_old').value='';
       document.getElementById('sp_new').value='';
     }catch(e){ toast(e.message,'error'); }
@@ -1865,9 +2974,17 @@ async function renderSettings(){
     const code = (selEstate.value||'').trim();
     if(!code) return;
     currentEstateCode = code;
-    const rr = await callApi('getSettings', { estate: currentEstateCode });
-    if(!rr.ok) return toast(rr.error||'Gagal load settings estate', 'error');
-    const s2 = rr.settings || {};
+    let s2 = {};
+    try {
+      const rr = await callApi('getSettings', { estate: currentEstateCode });
+      if(!rr.ok) throw new Error(rr.error||'Gagal load settings estate');
+      s2 = rr.settings || {};
+      await cacheUpsert('settings', { id:'settings:'+currentEstateCode, data: Object.assign({ __estate: currentEstateCode }, s2) });
+    } catch (e) {
+      const all = await cacheGetAll('settings');
+      s2 = all.find(x => String(x.__estate||'')===String(currentEstateCode)) || {};
+      if (!Object.keys(s2||{}).length) return toast((e && e.message) ? e.message : 'Offline dan cache kosong', 'error');
+    }
     document.getElementById('set_estateName').value = s2.estateName || '';
     document.getElementById('set_managerName').value = s2.managerName || '';
     document.getElementById('logoInfo').textContent = s2.companyLogoFileId ? `companyLogoFileId: ${s2.companyLogoFileId}` : 'Belum ada logo';
@@ -1884,8 +3001,14 @@ async function renderSettings(){
         { key:'estateName', value:(document.getElementById('set_estateName').value||'').trim() },
         { key:'managerName', value:(document.getElementById('set_managerName').value||'').trim() },
       ];
-      const rr = await callApi('setSettings', { estate: estateCode, items_json: JSON.stringify(items) });
+      const payload = { estate: estateCode, items_json: JSON.stringify(items) };
+      const rr = await callOrQueue(() => callApi('setSettings', payload), 'setSettings', payload, 'Simpan pengaturan');
       if(!rr.ok) throw new Error(rr.error||'Gagal');
+      // optimistic cache
+      const all = await cacheGetAll('settings');
+      const cur = all.find(x => String(x.__estate||'')===String(estateCode)) || {};
+      const merged = Object.assign({}, cur, { __estate: estateCode }, Object.fromEntries(items.map(i=>[i.key,i.value])));
+      await cacheUpsert('settings', { id:'settings:'+estateCode, data: merged });
       toast('Pengaturan tersimpan','ok');
     }catch(e){ toast(e.message,'error'); }
     finally{ btnBusy(btn,false,'Simpan Pengaturan'); }
@@ -1951,13 +3074,20 @@ async function renderSettings(){
   ]));
 
   async function refreshMasterEstates(){
-    const rr = await callApi('listMasterEstates', {});
-    if(!rr.ok) {
-      estatesHolder.innerHTML='';
-      estatesHolder.appendChild(h('div',{class:'text-rose-600'}, rr.error||'Gagal'));
-      return;
+    let items = [];
+    try {
+      const rr = await callApi('listMasterEstates', {});
+      if(!rr.ok) throw new Error(rr.error||'Gagal');
+      items = rr.items || [];
+      await cacheReplace('master_estates', items.map(x=>({ id:String(x.estate_code||''), data:x })), {});
+    } catch (e) {
+      items = await cacheGetAll('master_estates');
+      if (!items.length) {
+        estatesHolder.innerHTML='';
+        estatesHolder.appendChild(h('div',{class:'text-rose-600'}, (e && e.message) ? e.message : 'Offline dan cache kosong'));
+        return;
+      }
     }
-    const items = rr.items || [];
     state._estateOptions = items.filter(x=>x.active!==false).map(x=>x.estate_code);
     estatesHolder.innerHTML='';
     estatesHolder.appendChild(table(['Kode','Nama Estate','Manager','Active','Aksi'], items.map(e=>[
@@ -1975,69 +3105,73 @@ async function renderSettings(){
   async function deleteMasterEstate(estate_code){
     if(!estate_code) return;
     if(!confirm('Hapus Master Estate ini?')) return;
-    const rr = await callApi('deleteMasterEstate', { estate_code });
+    const payload = { estate_code };
+    const rr = await callOrQueue(() => callApi('deleteMasterEstate', payload), 'deleteMasterEstate', payload, 'Hapus Master Estate');
     if(!rr.ok) return toast(rr.error||'Gagal','error');
-    toast('Master Estate dihapus','ok');
+    await cacheDelete('master_estates', estate_code);
+    toast(rr.queued ? 'Di-antrikan (offline)' : 'Master Estate dihapus','ok');
     refreshMasterEstates();
   }
 
   function openMasterEstateModal(row, onDone){
-    const isEdit = !!row;
-    const overlay = h('div', { class:'fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/40' }, []);
-    const modal = card([
-      h('div',{class:'text-lg font-semibold'}, isEdit ? 'Edit Master Estate' : 'Tambah Master Estate'),
-      h('div',{class:'mt-4 grid md:grid-cols-2 gap-3'},[
-        mfield('Kode Estate (SRIE, dst)','me_code', row?.estate_code||'', { disabled:isEdit }),
-        mfield('Nama Estate','me_name', row?.estate_name||''),
-        mfield('Nama Manager','me_manager', row?.manager_name||''),
-        mfield('Active (TRUE/FALSE)','me_active', String(row?.active!==false)),
-      ]),
-      h('div',{class:'mt-5 flex justify-end gap-2'},[
-        h('button',{class:'rounded-2xl px-4 py-2 text-sm border border-slate-200 dark:border-slate-800', onclick:()=>overlay.remove()},'Batal'),
-        h('button',{id:'btnSaveME', class:'rounded-2xl px-4 py-2 text-sm bg-emerald-600 text-white hover:bg-emerald-700 flex items-center gap-2'},[
-          h('span',{'data-spinner':'', class:'hidden w-4 h-4 border-2 border-white/40 border-t-white rounded-full animate-spin'}),
-          h('span',{'data-label':'','data-orig':'Simpan'},'Simpan')
-        ])
-      ])
+  const isEdit = !!row;
+
+  const { body, close } = openModal_({
+    title: isEdit ? 'Edit Master Estate' : 'Tambah Master Estate',
+    subtitle: 'Header tetap, isi form bisa di-scroll.',
+    maxWidth: 'max-w-3xl'
+  });
+
+  body.appendChild(h('div',{class:'grid md:grid-cols-2 gap-3'},[
+    mfield('Kode Estate (SRIE, dst)','me_code', row?.estate_code||'', { disabled:isEdit }),
+    mfield('Nama Estate','me_name', row?.estate_name||''),
+    mfield('Nama Manager','me_manager', row?.manager_name||''),
+    mfield('Active (TRUE/FALSE)','me_active', String(row?.active!==false)),
+  ]));
+
+  body.appendChild(h('div',{class:'mt-5 flex justify-end gap-2'},[
+    h('button',{class:'rounded-2xl px-4 py-2 text-sm border border-slate-200 dark:border-slate-800', onclick: close},'Batal'),
+    h('button',{id:'btnSaveME', class:'rounded-2xl px-4 py-2 text-sm bg-emerald-600 text-white hover:bg-emerald-700 flex items-center gap-2'},[
+      h('span',{'data-spinner':'', class:'hidden w-4 h-4 border-2 border-white/40 border-t-white rounded-full animate-spin'}),
+      h('span',{'data-label':'','data-orig':'Simpan'},'Simpan')
+    ])
+  ]));
+
+  const codeInp = document.getElementById('me_code');
+  if (codeInp) codeInp.value = String(codeInp.value||'').toUpperCase();
+  if (codeInp && !isEdit) codeInp.addEventListener('input', ()=>{ codeInp.value = (codeInp.value||'').toUpperCase(); });
+
+  document.getElementById('btnSaveME').onclick = async ()=>{
+    const btn = document.getElementById('btnSaveME');
+    btnBusy(btn,true,'Menyimpan...');
+    try{
+      const payload = {
+        estate_code: (document.getElementById('me_code').value||'').trim().toUpperCase(),
+        estate_name: (document.getElementById('me_name').value||'').trim(),
+        manager_name: (document.getElementById('me_manager').value||'').trim(),
+        active: (document.getElementById('me_active').value||'').trim().toUpperCase()==='FALSE' ? 'FALSE' : 'TRUE'
+      };
+      if(!payload.estate_code) throw new Error('Kode estate wajib');
+      const rr = await callOrQueue(() => callApi('upsertMasterEstate', payload), 'upsertMasterEstate', payload, 'Simpan Master Estate');
+      if(!rr.ok) throw new Error(rr.error||'Gagal');
+      await cacheUpsert('master_estates', { id:String(payload.estate_code), data: Object.assign({}, row||{}, payload, { updated_at: new Date().toISOString(), __local_pending: !!rr.queued }) });
+      toast('Master Estate tersimpan','ok');
+      close();
+      onDone && onDone();
+    }catch(e){ toast(e.message,'error'); }
+    finally{ btnBusy(btn,false,'Simpan'); }
+  };
+
+  function mfield(label,id,val,opt){
+    opt = opt||{};
+    const attrs = { id, value:val||'', class:'mt-1 w-full rounded-2xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 px-3 py-3 text-sm' };
+    if (opt.disabled) attrs.disabled = true;
+    return h('div',{},[
+      h('label',{class:'text-sm text-slate-600 dark:text-slate-300'},label),
+      h('input', attrs)
     ]);
-    modal.classList.add('w-full','max-w-3xl');
-    overlay.appendChild(modal);
-    document.body.appendChild(overlay);
-
-    const codeInp = document.getElementById('me_code');
-    if (codeInp) codeInp.value = String(codeInp.value||'').toUpperCase();
-    if (codeInp && !isEdit) codeInp.addEventListener('input', ()=>{ codeInp.value = (codeInp.value||'').toUpperCase(); });
-
-    document.getElementById('btnSaveME').onclick = async ()=>{
-      const btn = document.getElementById('btnSaveME');
-      btnBusy(btn,true,'Menyimpan...');
-      try{
-        const payload = {
-          estate_code: (document.getElementById('me_code').value||'').trim().toUpperCase(),
-          estate_name: (document.getElementById('me_name').value||'').trim(),
-          manager_name: (document.getElementById('me_manager').value||'').trim(),
-          active: (document.getElementById('me_active').value||'').trim().toUpperCase()==='FALSE' ? 'FALSE' : 'TRUE'
-        };
-        if(!payload.estate_code) throw new Error('Kode estate wajib');
-        const rr = await callApi('upsertMasterEstate', payload);
-        if(!rr.ok) throw new Error(rr.error||'Gagal');
-        toast('Master Estate tersimpan','ok');
-        overlay.remove();
-        onDone && onDone();
-      }catch(e){ toast(e.message,'error'); }
-      finally{ btnBusy(btn,false,'Simpan'); }
-    };
-
-    function mfield(label,id,val,opt){
-      opt = opt||{};
-      const attrs = { id, value:val||'', class:'mt-1 w-full rounded-2xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 px-3 py-3 text-sm' };
-      if (opt.disabled) attrs.disabled = true;
-      return h('div',{},[
-        h('label',{class:'text-sm text-slate-600 dark:text-slate-300'},label),
-        h('input', attrs)
-      ]);
-    }
   }
+}
 
   await refreshMasterEstates();
 
@@ -2056,13 +3190,20 @@ async function renderSettings(){
   ]));
 
   async function refreshUsers(){
-    const rr = await callApi('listUsers', {});
-    if(!rr.ok) {
-      usersHolder.innerHTML='';
-      usersHolder.appendChild(h('div',{class:'text-rose-600'}, rr.error||'Gagal'));
-      return;
+    let items = [];
+    try {
+      const rr = await callApi('listUsers', {});
+      if(!rr.ok) throw new Error(rr.error||'Gagal');
+      items = rr.items || [];
+      await cacheReplace('users', items.map(x=>({ id:String(x.user_id||x.nik||''), data:x })), {});
+    } catch (e) {
+      items = await cacheGetAll('users');
+      if (!items.length) {
+        usersHolder.innerHTML='';
+        usersHolder.appendChild(h('div',{class:'text-rose-600'}, (e && e.message) ? e.message : 'Offline dan cache kosong'));
+        return;
+      }
     }
-    const items = rr.items || [];
     usersHolder.innerHTML='';
     usersHolder.appendChild(table(['NIK','Nama','Role','Active','Aksi'], items.map(u=>[
       u.nik||'-',
@@ -2080,16 +3221,28 @@ async function renderSettings(){
     if(!user_id) return;
     const newPin = prompt('PIN baru (kosong=1234):','1234');
     if(newPin===null) return;
-    const rr = await callApi('resetUserPin', { user_id, new_pin: (newPin||'1234').trim() });
+    const payload = { user_id, new_pin: (newPin||'1234').trim() };
+    const rr = await callOrQueue(() => callApi('resetUserPin', payload), 'resetUserPin', payload, 'Reset PIN');
     if(!rr.ok) return toast(rr.error||'Gagal','error');
-    toast('PIN direset','ok');
+    // cache: update pin locally (untuk admin referensi; tetap sensitif, tapi ini memang sudah ada di sheet)
+    const all = await cacheGetAll('users');
+    const u = all.find(x=>String(x.user_id||'')===String(user_id)) || null;
+    if (u) {
+      u.pin = payload.new_pin;
+      u.updated_at = new Date().toISOString();
+      u.__local_pending = !!rr.queued;
+      await cacheUpsert('users', { id:String(user_id), data:u });
+    }
+    toast(rr.queued ? 'Di-antrikan (offline)' : 'PIN direset','ok');
   }
   async function deleteUser(user_id){
     if(!user_id) return;
     if(!confirm('Hapus user ini?')) return;
-    const rr = await callApi('deleteUser', { user_id });
+    const payload = { user_id };
+    const rr = await callOrQueue(() => callApi('deleteUser', payload), 'deleteUser', payload, 'Hapus user');
     if(!rr.ok) return toast(rr.error||'Gagal','error');
-    toast('User dihapus','ok');
+    await cacheDelete('users', user_id);
+    toast(rr.queued ? 'Di-antrikan (offline)' : 'User dihapus','ok');
     refreshUsers();
   }
   await refreshUsers();
@@ -2113,29 +3266,31 @@ function readAsDataUrl(file){
 
 function openUserModal(user, onDone){
   const isEdit = !!user;
-  const overlay = h('div', { class:'fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/40' }, []);
-  const modal = card([
-    h('div',{class:'text-lg font-semibold'}, isEdit ? 'Edit User' : 'Tambah User'),
-    h('div',{class:'mt-4 grid md:grid-cols-2 gap-3'},[
-      ufield('NIK','u_nik', user?.nik||''),
-      ufield('Nama','u_name', user?.name||''),
-      ufield('Role (ADMIN/ASISTEN/MANDOR/MENTOR)','u_role', user?.role||'MANDOR'),
-      ufield('Active (TRUE/FALSE)','u_active', String(user?.active||'TRUE')),
-      uEstateSelect('Estate (Kode)','u_estate', user?.estate||''),
-      uDivisiField('Divisi (angka)','u_divisi', user?.unit||user?.divisi||''),
-      ufield('PIN (kosong = tidak diubah)','u_pin',''),
-    ]),
-    h('div',{class:'mt-5 flex justify-end gap-2'},[
-      h('button',{class:'rounded-2xl px-4 py-2 text-sm border border-slate-200 dark:border-slate-800', onclick:()=>overlay.remove()},'Batal'),
-      h('button',{id:'btnSaveUser', class:'rounded-2xl px-4 py-2 text-sm bg-emerald-600 text-white hover:bg-emerald-700 flex items-center gap-2'},[
-        h('span',{'data-spinner':'', class:'hidden w-4 h-4 border-2 border-white/40 border-t-white rounded-full animate-spin'}),
-        h('span',{'data-label':'','data-orig':'Simpan'},'Simpan')
-      ])
+
+  const { body, close } = openModal_({
+    title: isEdit ? 'Edit User' : 'Tambah User',
+    subtitle: 'Header tetap, isi form bisa di-scroll.',
+    maxWidth: 'max-w-3xl'
+  });
+
+  body.appendChild(h('div',{class:'grid md:grid-cols-2 gap-3'},[
+    ufield('NIK','u_nik', user?.nik||''),
+    ufield('Nama','u_name', user?.name||''),
+    ufield('Role (ADMIN/ASISTEN/MANDOR/MENTOR)','u_role', user?.role||'MANDOR'),
+    ufield('Active (TRUE/FALSE)','u_active', String(user?.active||'TRUE')),
+    uEstateSelect('Estate (Kode)','u_estate', user?.estate||''),
+    uDivisiField('Divisi (angka)','u_divisi', user?.unit||user?.divisi||''),
+    ufield('PIN (kosong = tidak diubah)','u_pin',''),
+  ]));
+
+  body.appendChild(h('div',{class:'mt-5 flex justify-end gap-2'},[
+    h('button',{class:'rounded-2xl px-4 py-2 text-sm border border-slate-200 dark:border-slate-800', onclick: close},'Batal'),
+    h('button',{id:'btnSaveUser', class:'rounded-2xl px-4 py-2 text-sm bg-emerald-600 text-white hover:bg-emerald-700 flex items-center gap-2'},[
+      h('span',{'data-spinner':'', class:'hidden w-4 h-4 border-2 border-white/40 border-t-white rounded-full animate-spin'}),
+      h('span',{'data-label':'','data-orig':'Simpan'},'Simpan')
     ])
-  ]);
-  modal.classList.add('w-full','max-w-3xl');
-  overlay.appendChild(modal);
-  document.body.appendChild(overlay);
+  ]));
+
   const se = document.getElementById('u_estate');
   if (se) se.value = String(user?.estate||'').trim().toUpperCase();
 
@@ -2153,10 +3308,12 @@ function openUserModal(user, onDone){
         divisi: (document.getElementById('u_divisi').value||'').trim(),
         pin: (document.getElementById('u_pin').value||'').trim(),
       };
-      const rr = await callApi('upsertUser', payload);
+      const rr = await callOrQueue(() => callApi('upsertUser', payload), 'upsertUser', payload, 'Simpan user');
       if(!rr.ok) throw new Error(rr.error||'Gagal');
+      const uid = rr.user_id || payload.user_id || payload.nik;
+      await cacheUpsert('users', { id:String(uid), data: Object.assign({}, user||{}, payload, { user_id: uid, updated_at: new Date().toISOString(), __local_pending: !!rr.queued }) });
       toast('User tersimpan','ok');
-      overlay.remove();
+      close();
       onDone && onDone();
     }catch(e){ toast(e.message,'error'); }
     finally{ btnBusy(btn,false,'Simpan'); }
@@ -2188,6 +3345,312 @@ function openUserModal(user, onDone){
       ])
     ]);
   }
+}
+
+// ======================
+// SINKRONISASI (Offline-first)
+// ======================
+async function renderSync() {
+  const role = String(state.user?.role||'').toUpperCase();
+  const v = setViewTitle('Sinkronisasi', 'Tarik data ke IndexedDB & kirim antrian (outbox) ke server');
+
+  const pid = currentProgramId_();
+
+  const estates = (state.estates || []).map(x => x.estate_code || x.code || x).filter(Boolean);
+  const myEstate = (state.user?.estate || state.user?.estate_code || state.myEstate || '').toUpperCase();
+
+  // Header info
+  const ob = await outboxList();
+  const info = h('div',{class:'mb-4 grid md:grid-cols-3 gap-3'},[
+    card([
+      h('div',{class:'text-xs text-slate-500 dark:text-slate-400'},'Program Context'),
+      h('div',{class:'mt-1 font-semibold'}, pid || '-'),
+      h('div',{class:'mt-2 text-xs text-slate-500 dark:text-slate-400'}, pid==='__ALL__' ? 'Catatan: __ALL__ hanya untuk menu Dashboard / data master.' : 'Program-scoped sync.'),
+    ]),
+    card([
+      h('div',{class:'text-xs text-slate-500 dark:text-slate-400'},'Outbox (antrian)'),
+      h('div',{class:'mt-1 text-2xl font-semibold'}, String(ob.length)),
+      h('div',{class:'mt-2 text-xs text-slate-500 dark:text-slate-400'}, ob.length ? 'Ada perubahan lokal yang belum terkirim' : 'Tidak ada antrian'),
+    ]),
+    card([
+      h('div',{class:'text-xs text-slate-500 dark:text-slate-400'},'Estate'),
+      h('div',{class:'mt-1 font-semibold'}, myEstate || '-'),
+      h('div',{class:'mt-2 text-xs text-slate-500 dark:text-slate-400'}, role==='ADMIN' ? 'Admin bisa tarik data master semua estate' : 'Scoped sesuai akun'),
+    ]),
+  ]);
+  v.appendChild(info);
+
+  const scopes = [
+    { key:'programs', label:'Programs (master)', adminOnly:false },
+    { key:'master_estates', label:'MasterEstates (master)', adminOnly:true },
+    { key:'users', label:'Users (master)', adminOnly:true },
+    { key:'settings', label:'Settings (master)', adminOnly:true },
+    { key:'candidates', label:'Candidates', adminOnly:false, needsProgram:true },
+    { key:'selection', label:'SelectionResults (view)', adminOnly:false, needsProgram:true },
+    { key:'participants', label:'Participants', adminOnly:false, needsProgram:true },
+    { key:'mentors', label:'Mentors', adminOnly:false, needsProgram:true },
+    { key:'pairings', label:'Pairings', adminOnly:false, needsProgram:true },
+    { key:'daily_logs', label:'DailyLogs', adminOnly:false, needsProgram:true },
+    { key:'graduations', label:'Graduations', adminOnly:false, needsProgram:true },
+    { key:'certificates', label:'Certificates', adminOnly:false, needsProgram:true },
+    { key:'incentives', label:'MentorIncentives', adminOnly:false, needsProgram:true },
+  ];
+
+  const scopeBox = h('div',{class:'grid md:grid-cols-2 gap-2'},
+    scopes
+      .filter(s=> !s.adminOnly || role==='ADMIN')
+      .map(s=>h('label',{class:'flex items-center gap-2 p-3 rounded-2xl border border-slate-200 dark:border-slate-800 bg-white/60 dark:bg-slate-950/40'},[
+        h('input',{type:'checkbox', id:'sc_'+s.key, checked:true}),
+        h('span',{class:'text-sm'}, s.label)
+      ]))
+  );
+
+  const adminEstateSel = (role==='ADMIN') ? h('div',{class:'mt-3'},[
+    h('label',{class:'text-sm text-slate-600 dark:text-slate-300'},'Filter Estate (opsional)'),
+    h('select',{id:'sync_estate', class:'mt-1 w-full rounded-2xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 px-3 py-3 text-sm'},[
+      h('option',{value:''},'-- Semua estate (master data) --'),
+      ...estates.map(code=>h('option',{value:code},code))
+    ])
+  ]) : null;
+
+  v.appendChild(card([
+    h('div',{class:'font-semibold'},'Scope data yang disinkronkan'),
+    h('div',{class:'mt-3'}, scopeBox),
+    adminEstateSel,
+    h('div',{class:'mt-4 flex flex-wrap gap-2'},[
+      h('button',{id:'btn_pull', class:'rounded-2xl px-4 py-2 bg-slate-900 text-white dark:bg-slate-100 dark:text-slate-900 text-sm'},'Tarik data (Pull)'),
+      h('button',{id:'btn_push', class:'rounded-2xl px-4 py-2 bg-emerald-600 text-white hover:bg-emerald-700 text-sm'},'Kirim antrian (Push)'),
+      h('button',{id:'btn_both', class:'rounded-2xl px-4 py-2 border border-slate-200 dark:border-slate-800 text-sm'},'Pull + Push'),
+      h('button',{id:'btn_refresh_sync', class:'rounded-2xl px-4 py-2 border border-slate-200 dark:border-slate-800 text-sm'},'Refresh halaman'),
+    ]),
+  ]));
+
+  // Progress UI
+  const prog = h('div',{class:'mt-4'},[
+    h('div',{class:'text-sm font-medium'},'Progress'),
+    h('div',{class:'mt-2 w-full h-3 rounded-full bg-slate-200 dark:bg-slate-800 overflow-hidden'},[
+      h('div',{id:'sync_bar', class:'h-3 bg-emerald-600', style:'width:0%'}),
+    ]),
+    h('div',{id:'sync_label', class:'mt-2 text-xs text-slate-500 dark:text-slate-400'},'Siap'),
+    h('pre',{id:'sync_log', class:'mt-3 text-[11px] whitespace-pre-wrap rounded-2xl border border-slate-200 dark:border-slate-800 bg-white/60 dark:bg-slate-950/40 p-3 max-h-64 overflow-auto'},''),
+  ]);
+  v.appendChild(prog);
+
+  const setProgress = (pct, label, appendLog=true) => {
+    const bar = document.getElementById('sync_bar');
+    const lab = document.getElementById('sync_label');
+    const log = document.getElementById('sync_log');
+    if (bar) bar.style.width = Math.max(0, Math.min(100, pct)) + '%';
+    if (lab) lab.textContent = label || '';
+    if (appendLog && log) log.textContent += (label || '') + '\n';
+  };
+
+  const getSelectedScopes = ()=>{
+    return scopes
+      .filter(s=> (!s.adminOnly || role==='ADMIN'))
+      .filter(s=> !!document.getElementById('sc_'+s.key)?.checked)
+      .map(s=>s);
+  };
+
+  async function doPull_() {
+    const selected = getSelectedScopes();
+    const estateFilter = (role==='ADMIN') ? (document.getElementById('sync_estate')?.value || '').trim().toUpperCase() : '';
+    if (selected.some(s=>s.needsProgram) && (!pid || pid==='__ALL__')) {
+      toast('Pilih program tertentu (bukan "Semua Program") untuk sync data program.', 'error');
+      return;
+    }
+
+    setProgress(0, 'Mulai pull…');
+    const steps = selected.length || 1;
+    let done = 0;
+
+    const step = async (label, fn) => {
+      setProgress(Math.round((done/steps)*100), label);
+      const r = await fn();
+      done += 1;
+      setProgress(Math.round((done/steps)*100), label + ' ✓');
+      return r;
+    };
+
+    let mpDone = false;
+    for (const s of selected) {
+      if (s.key === 'programs') {
+        await step('Pull Programs…', async ()=>{
+          const r = await callApi('listPrograms', {});
+          if (!r.ok) throw new Error(r.error||'Gagal listPrograms');
+          const rows = normalizeRows_(r.programs||[], 'program_id');
+          await cacheReplace('programs', rows, { estate: estateFilter || '' });
+          return true;
+        });
+      }
+
+      if (s.key === 'master_estates') {
+        await step('Pull MasterEstates…', async ()=>{
+          const r = await callApi('listMasterEstates', {});
+          if (!r.ok) throw new Error(r.error||'Gagal listMasterEstates');
+          let items = r.items || r.estates || [];
+          if (estateFilter) items = items.filter(x=> String(x.estate_code||'').toUpperCase()===estateFilter);
+          await cacheReplace('master_estates', items.map(x=>({ id:String(x.estate_code||''), data:x })), { estate: estateFilter || '' });
+          return true;
+        });
+      }
+
+      if (s.key === 'users') {
+        await step('Pull Users…', async ()=>{
+          const r = await callApi('listUsers', {});
+          if (!r.ok) throw new Error(r.error||'Gagal listUsers');
+          const items = r.items || [];
+          await cacheReplace('users', items.map(x=>({ id:String(x.user_id||x.nik||''), data:x })), { estate: estateFilter || '' });
+          return true;
+        });
+      }
+
+      if (s.key === 'settings') {
+        await step('Pull Settings…', async ()=>{
+          // admin: pull global + per-estate if filter set
+          const estatesToPull = estateFilter ? [estateFilter] : (estates.length ? estates : ['']);
+          const rows = [];
+          for (const code of estatesToPull) {
+            const r = await callApi('getSettings', code ? { estate: code } : {});
+            if (!r.ok) throw new Error(r.error||'Gagal getSettings');
+            const sid = 'settings:' + (code || '__GLOBAL__');
+            rows.push({ id: sid, data: Object.assign({ __estate: code || '' }, (r.settings||{})) });
+          }
+          await cacheReplace('settings', rows, { estate: estateFilter || '' });
+          return true;
+        });
+      }
+
+      if (s.key === 'candidates') {
+        await step('Pull Candidates…', async ()=>{
+          const r = await callApi('listCandidates', { program_id: pid });
+          if (!r.ok) throw new Error(r.error||'Gagal listCandidates');
+          await cacheReplace('candidates', normalizeRows_(r.candidates||[], 'candidate_id'), { program_id: pid });
+          return true;
+        });
+      }
+
+      if (s.key === 'selection') {
+        await step('Pull Selection…', async ()=>{
+          const r = await callApi('listSelection', { program_id: pid });
+          if (!r.ok) throw new Error(r.error||'Gagal listSelection');
+          const items = r.items || [];
+          await cacheReplace('selection', items.map(x=>({ id:String(x.candidate_id||x.selection_id||''), data:x })), { program_id: pid });
+          return true;
+        });
+      }
+
+      if (s.key === 'participants') {
+        await step('Pull Participants…', async ()=>{
+          const r = await callApi('listParticipants', { program_id: pid });
+          if (!r.ok) throw new Error(r.error||'Gagal listParticipants');
+          await cacheReplace('participants', normalizeRows_(r.participants||[], 'participant_id'), { program_id: pid });
+          return true;
+        });
+      }
+
+      if ((s.key === 'mentors' || s.key === 'pairings') && !mpDone) {
+        // listMentors contains both mentors & pairings
+        await step('Pull Mentors & Pairings…', async ()=>{
+          const r = await callApi('listMentors', { program_id: pid });
+          if (!r.ok) throw new Error(r.error||'Gagal listMentors');
+          if (document.getElementById('sc_mentors')?.checked) {
+            await cacheReplace('mentors', normalizeRows_(r.mentors||[], 'mentor_id'), { program_id: pid });
+          }
+          if (document.getElementById('sc_pairings')?.checked) {
+            await cacheReplace('pairings', normalizeRows_(r.pairings||[], 'pairing_id'), { program_id: pid });
+          }
+          return true;
+        });
+        mpDone = true;
+      }
+
+      if (s.key === 'daily_logs') {
+        await step('Pull DailyLogs…', async ()=>{
+          const r = await callApi('getDailyLogs', { program_id: pid, date:'', q:'' });
+          if (!r.ok) throw new Error(r.error||'Gagal getDailyLogs');
+          const rows = normalizeRows_(r.logs||[], 'log_id').filter(x=>String(x.id||''));
+          await cacheReplace('daily_logs', rows, { program_id: pid });
+          return true;
+        });
+      }
+
+      if (s.key === 'graduations') {
+        await step('Pull Graduations…', async ()=>{
+          const r = await callApi('listGraduation', {});
+          if (!r.ok) throw new Error(r.error||'Gagal listGraduation');
+          await cacheReplace('graduations', (r.items||[]).map(x=>({ id:String(x.participant_id||x.grad_id||''), data:x })), { program_id: pid });
+          return true;
+        });
+      }
+
+      if (s.key === 'certificates') {
+        await step('Pull Certificates…', async ()=>{
+          const r = await callApi('listCertificates', {});
+          if (!r.ok) throw new Error(r.error||'Gagal listCertificates');
+          await cacheReplace('certificates', (r.items||[]).map(x=>({ id:String(x.cert_id||x.certificate_no||''), data:x })), { program_id: pid });
+          return true;
+        });
+      }
+
+      if (s.key === 'incentives') {
+        await step('Pull Incentives…', async ()=>{
+          const r = await callApi('listMentorIncentives', {});
+          if (!r.ok) throw new Error(r.error||'Gagal listMentorIncentives');
+          await cacheReplace('incentives', (r.items||[]).map(x=>({ id:String(x.incentive_id||''), data:x })), { program_id: pid });
+          return true;
+        });
+      }
+    }
+
+    setProgress(100, 'Pull selesai ✅');
+    toast('Pull selesai', 'ok');
+  }
+
+  async function doPush_() {
+    const items = await outboxList();
+    if (!items.length) {
+      toast('Outbox kosong', 'info');
+      setProgress(100, 'Tidak ada antrian');
+      return;
+    }
+    setProgress(0, 'Mulai push…');
+    const steps = items.length;
+    let done = 0;
+
+    for (const it of items) {
+      const label = `Push ${it.action}…`;
+      setProgress(Math.round((done/steps)*100), label);
+      try {
+        const r = await callApi(it.action, it.payload || {});
+        if (!r.ok) throw new Error(r.error||'Gagal');
+        await outboxRemove(it.id);
+        done += 1;
+        setProgress(Math.round((done/steps)*100), label + ' ✓');
+      } catch (e) {
+        setProgress(Math.round((done/steps)*100), label + ' ✗ ' + (e.message||e), true);
+        toast('Push berhenti: ' + (e.message||e), 'error');
+        return;
+      }
+    }
+
+    setProgress(100, 'Push selesai ✅');
+    toast('Push selesai', 'ok');
+  }
+
+  document.getElementById('btn_pull').onclick = async ()=>{
+    btnBusy(document.getElementById('btn_pull'), true, 'Pull…');
+    try{ await doPull_(); } finally { btnBusy(document.getElementById('btn_pull'), false, 'Tarik data (Pull)'); }
+  };
+  document.getElementById('btn_push').onclick = async ()=>{
+    btnBusy(document.getElementById('btn_push'), true, 'Push…');
+    try{ await doPush_(); } finally { btnBusy(document.getElementById('btn_push'), false, 'Kirim antrian (Push)'); }
+  };
+  document.getElementById('btn_both').onclick = async ()=>{
+    btnBusy(document.getElementById('btn_both'), true, 'Sync…');
+    try{ await doPull_(); await doPush_(); } finally { btnBusy(document.getElementById('btn_both'), false, 'Pull + Push'); }
+  };
+  document.getElementById('btn_refresh_sync').onclick = ()=>renderSync();
 }
 
 boot();

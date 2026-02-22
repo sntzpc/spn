@@ -1,2 +1,12 @@
 :root { color-scheme: light; }
 html.dark { color-scheme: dark; }
+
+/* ==== Modal mobile scroll improvements ==== */
+.modal-scroll {
+  -webkit-overflow-scrolling: touch;
+  overscroll-behavior: contain;
+}
+
+.modal-overlay {
+  padding-bottom: env(safe-area-inset-bottom);
+}

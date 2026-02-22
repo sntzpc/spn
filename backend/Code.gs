@@ -100,6 +100,11 @@ function doGet(e) {
       case 'submitDailyLog': return respond_(p, submitDailyLog_(sess, p));
       case 'getDailyLogs': return respond_(p, getDailyLogs_(sess, p));
       case 'computeWeeklyRecap': return respond_(p, computeWeeklyRecap_(sess, p));
+      case 'listWeeklyRecaps': return respond_(p, listWeeklyRecaps_(sess, p));
+
+      // Rekap tambahan
+      case 'listMonthlyRecaps': return respond_(p, listMonthlyRecaps_(sess, p));
+      case 'listFinalRecap': return respond_(p, listFinalRecap_(sess, p));
 
       case 'listGraduation': return respond_(p, listGraduation_(sess, p));
       case 'graduateParticipant': return respond_(p, graduateParticipant_(sess, p));
@@ -1435,8 +1440,9 @@ function submitDailyLog_(sess, p) {
 
 function getDailyLogs_(sess, p) {
   const ctx = resolveProgramContext_(sess, p || {}, true);
-  const activeProgramId = ctx.program_id;
-  if (!activeProgramId) return { ok:false, error:'activeProgramId belum diset' };
+  let activeProgramId = ctx.program_id;
+  const role = String(sess.user.role||'').toUpperCase();
+  if (!activeProgramId && role !== 'ADMIN') return { ok:false, error:'Pilih program dulu' };
   const date = (p.date||'').trim();
   const q = (p.q||'').trim().toLowerCase();
 
@@ -1478,55 +1484,84 @@ function getDailyLogs_(sess, p) {
 function computeWeeklyRecap_(sess, p) {
   if (!inRoles_(sess, ['ADMIN','ASISTEN'])) return { ok:false, error:'Hanya ADMIN/ASISTEN' };
   const ctx = resolveProgramContext_(sess, p || {}, true);
-  const activeProgramId = ctx.program_id;
-  if (!activeProgramId) return { ok:false, error:'activeProgramId belum diset' };
+  const programId = String(ctx.program_id||'').trim();
+  if (!programId) return { ok:false, error:'Program belum dipilih' };
 
-  const anyDateStr = (p.any_date||'').trim();
-  if (!anyDateStr) return { ok:false, error:'any_date wajib' };
-  const anyDate = new Date(anyDateStr + 'T00:00:00');
+  const anyDateIso = toISODate_(p.any_date||'');
+  if (!anyDateIso) return { ok:false, error:'any_date wajib (yyyy-mm-dd)' };
+  const anyDate = new Date(anyDateIso + 'T00:00:00');
   if (isNaN(anyDate.getTime())) return { ok:false, error:'Tanggal tidak valid' };
 
-  const ws = weekStartMonday_(anyDate);
-  const we = new Date(ws.getTime() + 6*24*3600*1000);
+  const wsObj = weekStartMonday_(anyDate);
+  const weObj = new Date(wsObj.getTime() + 6*24*3600*1000);
+  const week_start = formatDate_(wsObj);
+  const week_end   = formatDate_(weObj);
 
-  const week_start = formatDate_(ws);
-  const week_end = formatDate_(we);
+  // Ambil log minggu tsb (date bisa berupa ISO atau string Date; kita normalisasi ke ISO)
+  const logsAll = sheetToObjects_('DailyLogs').filter(x => String(x.program_id||'') === programId);
+  const logs = logsAll.filter(x => {
+    const d = toISODate_(x.date||'');
+    return d && d >= week_start && d <= week_end;
+  });
 
-  const logs = sheetToObjects_('DailyLogs').filter(x =>
-    String(x.program_id||'') === activeProgramId &&
-    String(x.date||'') >= week_start &&
-    String(x.date||'') <= week_end
-  );
   const byParticipant = {};
   logs.forEach(l => {
-    const pid = String(l.participant_id||'');
+    const pid = String(l.participant_id||'').trim();
+    if (!pid) return;
     if (!byParticipant[pid]) byParticipant[pid] = [];
+    // simpan versi ISO supaya konsisten
+    l.__date_iso = toISODate_(l.date||'');
     byParticipant[pid].push(l);
   });
 
-  const participants = sheetToObjects_('Participants').filter(x => String(x.program_id||'') === activeProgramId);
+  const participants = sheetToObjects_('Participants').filter(x => String(x.program_id||'') === programId);
+
   let upserts = 0;
+  let inserted = 0;
+  let updated = 0;
 
   participants.forEach(pt => {
-    const pid = String(pt.participant_id||'');
+    const pid = String(pt.participant_id||'').trim();
+    if (!pid) return;
     const arr = byParticipant[pid] || [];
     if (!arr.length) return;
 
     const ton = avg_(arr.map(x => num_(x.tonnage)));
     const disc = avg_(arr.map(x => num_(x.discipline_score)));
-    const attendancePct = pct_(arr.filter(x => String(x.attendance||'') === 'HADIR').length, arr.length);
-    const apdPct = pct_(arr.filter(x => String(x.apd_ok||'') === 'TRUE').length, arr.length);
+
+    const hadirCount = arr.filter(x => String(x.attendance||'').trim().toLowerCase() === 'hadir').length;
+    const apdOkCount = arr.filter(x => String(x.apd_ok||'').trim().toLowerCase() === 'true').length;
+
+    const attendancePct = pct_(hadirCount, arr.length);
+    const apdPct = pct_(apdOkCount, arr.length);
+
+    // mutu_grade pada data Anda berupa angka (contoh 85). Kalau tidak angka, fallback mode.
+    const mutuNums = arr.map(x => num_(x.mutu_grade)).filter(v => isFinite(v));
+    const avgMutuNum = mutuNums.length ? avg_(mutuNums) : NaN;
+    const mutuText = isFinite(avgMutuNum)
+      ? String(round2_(avgMutuNum))
+      : mode_(arr.map(x => String(x.mutu_grade||'').trim()).filter(Boolean));
+
+    // losses_rate: total losses_brondolan / total tonnage (jika tonnage total > 0)
+    const totalLosses = sum_(arr.map(x => num_(x.losses_brondolan)));
+    const totalTon = sum_(arr.map(x => num_(x.tonnage)));
+    const lossesRate = (isFinite(totalLosses) && isFinite(totalTon) && totalTon > 0)
+      ? (totalLosses / totalTon)
+      : '';
+
+    // RECAP ID harus stabil supaya "periode yang sama" update baris yang sama (tidak bikin baris baru)
+    const stableRecapId = stableId_('WREC', programId + '|' + pid + '|' + week_start);
 
     const recap = {
-      recap_id: Utilities.getUuid(),
-      program_id: activeProgramId,
+      recap_id: stableRecapId,
+      program_id: programId,
       participant_id: pid,
-      week_no: weekNoFromStart_(activeProgramId, ws),
-      week_start,
-      week_end,
+      week_no: weekNoFromStart_(programId, wsObj),
+      week_start: week_start,
+      week_end: week_end,
       avg_tonnage: isFinite(ton) ? String(round2_(ton)) : '',
-      avg_mutu: mode_(arr.map(x => String(x.mutu_grade||'').trim()).filter(Boolean)),
-      losses_rate: '', // bisa dihitung jika punya standar
+      avg_mutu: mutuText || '',
+      losses_rate: (lossesRate === '' ? '' : String(round4_(lossesRate))),
       attendance_pct: String(round2_(attendancePct)),
       apd_pct: String(round2_(apdPct)),
       discipline_avg: isFinite(disc) ? String(round2_(disc)) : '',
@@ -1535,19 +1570,285 @@ function computeWeeklyRecap_(sess, p) {
       reviewed_at: nowIso_()
     };
 
-    // Upsert by (program_id, participant_id, week_start)
-    const existing = findWeeklyRecap_(activeProgramId, pid, week_start);
+    // Upsert by stable recap_id (single row for same program+participant+week_start)
+    const existing = findRowByIdObj_('WeeklyRecaps', 'recap_id', stableRecapId);
     if (existing) {
-      writeRowById_('WeeklyRecaps', 'recap_id', existing.recap_id, recap);
+      // jangan pernah ganti recap_id
+      recap.recap_id = stableRecapId;
+      writeRowById_('WeeklyRecaps', 'recap_id', stableRecapId, recap, false);
+      updated++;
     } else {
       appendRow_('WeeklyRecaps', recap);
+      inserted++;
     }
     upserts++;
   });
 
-  audit_(sess.user.nik, 'COMPUTE', 'WeeklyRecaps', activeProgramId, { week_start, week_end, upserts });
-  return { ok:true, week_start, week_end, upserts };
+  audit_(sess.user.nik, 'COMPUTE', 'WeeklyRecaps', programId, { week_start, week_end, upserts, inserted, updated });
+  return { ok:true, week_start, week_end, upserts, inserted, updated };
 }
+
+function listWeeklyRecaps_(sess, p) {
+  const ctx = resolveProgramContext_(sess, p || {}, true);
+  const programId = String(ctx.program_id||'').trim();
+  if (!programId) return { ok:false, error:'Program belum dipilih' };
+
+  const anyDateIso = toISODate_(p.any_date||'');
+  if (!anyDateIso) return { ok:false, error:'any_date wajib (yyyy-mm-dd)' };
+  const anyDate = new Date(anyDateIso + 'T00:00:00');
+  if (isNaN(anyDate.getTime())) return { ok:false, error:'Tanggal tidak valid' };
+
+  const wsObj = weekStartMonday_(anyDate);
+  const weObj = new Date(wsObj.getTime() + 6*24*3600*1000);
+  const week_start = formatDate_(wsObj);
+  const week_end   = formatDate_(weObj);
+
+  const includeAll = String(p.include_all||'').trim() === '1' || String(p.include_all||'').trim().toLowerCase() === 'true';
+
+  const recapsAll = sheetToObjects_('WeeklyRecaps').filter(x => String(x.program_id||'') === programId);
+  const recaps = recapsAll.filter(x => toISODate_(x.week_start||'') === week_start);
+
+  const participants = sheetToObjects_('Participants').filter(x => String(x.program_id||'') === programId);
+  const pmap = {};
+  participants.forEach(pt => { pmap[String(pt.participant_id||'')] = pt; });
+
+  // Jika include_all aktif, tampilkan semua peserta meski belum ada recap/log (baris 0%)
+  const recapByPid = {};
+  recaps.forEach(r => { recapByPid[String(r.participant_id||'')] = r; });
+
+  const baseList = includeAll ? participants : recaps.map(r => pmap[String(r.participant_id||'')] || { participant_id: r.participant_id });
+
+  const items = (baseList||[]).map(pt0 => {
+    const pid = String((pt0 && (pt0.participant_id||pt0.id)) || '').trim();
+    if (!pid) return null;
+    const pt = pmap[pid] || pt0 || {};
+    const r = recapByPid[pid] || null;
+    if (r) {
+      return Object.assign({}, r, {
+        week_start: week_start,
+        week_end: week_end,
+        participant_name: pt.name || '',
+        participant_nik: pt.nik || ''
+      });
+    }
+    // Virtual recap row (tidak ditulis ke sheet)
+    return {
+      recap_id: stableId_('WREC', programId + '|' + pid + '|' + week_start),
+      program_id: programId,
+      participant_id: pid,
+      week_no: weekNoFromStart_(programId, wsObj),
+      week_start: week_start,
+      week_end: week_end,
+      avg_tonnage: '',
+      avg_mutu: '',
+      losses_rate: '',
+      attendance_pct: '0',
+      apd_pct: '0',
+      discipline_avg: '',
+      recommendation: '',
+      reviewed_by: '',
+      reviewed_at: '',
+      participant_name: pt.name || '',
+      participant_nik: pt.nik || ''
+    };
+  }).filter(Boolean);
+
+  // sort by name then nik
+  items.sort((a,b)=> String(a.participant_name||'').localeCompare(String(b.participant_name||'')) || String(a.participant_nik||'').localeCompare(String(b.participant_nik||'')));
+  return { ok:true, week_start, week_end, items };
+}
+
+
+// -------------------- Monthly & Final Recaps --------------------
+function listMonthlyRecaps_(sess, p){
+  const ctx = resolveProgramContext_(sess, p || {}, true);
+  const programId = String(ctx.program_id||'').trim();
+  if (!programId) return { ok:false, error:'Program belum dipilih' };
+
+  const anyDateIso = toISODate_(p.any_date||'');
+  if (!anyDateIso) return { ok:false, error:'any_date wajib (yyyy-mm-dd)' };
+  const anyDate = new Date(anyDateIso + 'T00:00:00');
+  if (isNaN(anyDate.getTime())) return { ok:false, error:'Tanggal tidak valid' };
+
+  const includeAll = String(p.include_all||'').trim() === '1' || String(p.include_all||'').trim().toLowerCase() === 'true';
+
+  const msObj = new Date(anyDate.getFullYear(), anyDate.getMonth(), 1);
+  const meObj = new Date(anyDate.getFullYear(), anyDate.getMonth()+1, 0);
+  const month_start = formatDate_(msObj);
+  const month_end = formatDate_(meObj);
+  const month_key = month_start.slice(0,7);
+
+  const logsAll = sheetToObjects_('DailyLogs').filter(x => String(x.program_id||'') === programId);
+  const logs = logsAll.filter(x => {
+    const d = toISODate_(x.date||'');
+    return d && d >= month_start && d <= month_end;
+  });
+
+  const byPid = {};
+  logs.forEach(l => {
+    const pid = String(l.participant_id||'').trim();
+    if (!pid) return;
+    if (!byPid[pid]) byPid[pid] = [];
+    byPid[pid].push(l);
+  });
+
+  const participants = sheetToObjects_('Participants').filter(x => String(x.program_id||'') === programId);
+  const items = (participants||[]).map(pt => {
+    const pid = String(pt.participant_id||'').trim();
+    if (!pid) return null;
+    const arr = byPid[pid] || [];
+
+    const ton = avg_(arr.map(x => num_(x.tonnage)));
+    const disc = avg_(arr.map(x => num_(x.discipline_score)));
+    const hadirCount = arr.filter(x => String(x.attendance||'').trim().toLowerCase() === 'hadir').length;
+    const apdOkCount = arr.filter(x => String(x.apd_ok||'').trim().toLowerCase() === 'true').length;
+    const attendancePct = pct_(hadirCount, arr.length);
+    const apdPct = pct_(apdOkCount, arr.length);
+    const mutuNums = arr.map(x => num_(x.mutu_grade)).filter(v => isFinite(v));
+    const avgMutuNum = mutuNums.length ? avg_(mutuNums) : NaN;
+    const mutuText = isFinite(avgMutuNum) ? String(round2_(avgMutuNum)) : mode_(arr.map(x => String(x.mutu_grade||'').trim()).filter(Boolean));
+    const totalLosses = sum_(arr.map(x => num_(x.losses_brondolan)));
+    const totalTon = sum_(arr.map(x => num_(x.tonnage)));
+    const lossesRate = (isFinite(totalLosses) && isFinite(totalTon) && totalTon > 0) ? (totalLosses/totalTon) : '';
+
+    return {
+      recap_id: stableId_('MREC', programId + '|' + pid + '|' + month_start),
+      program_id: programId,
+      participant_id: pid,
+      month: month_key,
+      month_start,
+      month_end,
+      total_logs: String(arr.length || 0),
+      avg_tonnage: isFinite(ton) ? String(round2_(ton)) : '',
+      avg_mutu: mutuText || '',
+      losses_rate: (lossesRate === '' ? '' : String(round4_(lossesRate))),
+      attendance_pct: String(round2_(attendancePct || 0)),
+      apd_pct: String(round2_(apdPct || 0)),
+      discipline_avg: isFinite(disc) ? String(round2_(disc)) : '',
+      participant_name: pt.name || '',
+      participant_nik: pt.nik || ''
+    };
+  }).filter(Boolean);
+
+  if (!includeAll) {
+    return { ok:true, month: month_key, month_start, month_end, items: items.filter(x => Number(x.total_logs||0) > 0) };
+  }
+  items.sort((a,b)=> String(a.participant_name||'').localeCompare(String(b.participant_name||'')) || String(a.participant_nik||'').localeCompare(String(b.participant_nik||'')));
+  return { ok:true, month: month_key, month_start, month_end, items };
+}
+
+function listFinalRecap_(sess, p){
+  if (!inRoles_(sess, ['ADMIN','ASISTEN'])) return { ok:false, error:'Hanya ADMIN/ASISTEN' };
+  const ctx = resolveProgramContext_(sess, p || {}, true);
+  const programId = String(ctx.program_id||'').trim();
+  if (!programId) return { ok:false, error:'Program belum dipilih' };
+
+  const prog = sheetToObjects_('Programs').find(x => String(x.program_id||'') === programId) || {};
+  const ps = toISODate_(prog.period_start || prog.start_date || '');
+  const pe = toISODate_(prog.period_end || prog.end_date || '');
+
+  const logsAll = sheetToObjects_('DailyLogs').filter(x => String(x.program_id||'') === programId);
+  const allDates = logsAll.map(x => toISODate_(x.date||'')).filter(Boolean).sort();
+  const period_start = ps || (allDates.length ? allDates[0] : formatDate_(new Date()));
+  const period_end = pe || (allDates.length ? allDates[allDates.length-1] : formatDate_(new Date()));
+
+  const logs = logsAll.filter(x => {
+    const d = toISODate_(x.date||'');
+    return d && d >= period_start && d <= period_end;
+  });
+
+  const byPid = {};
+  logs.forEach(l => {
+    const pid = String(l.participant_id||'').trim();
+    if (!pid) return;
+    if (!byPid[pid]) byPid[pid] = [];
+    byPid[pid].push(l);
+  });
+
+  const participants = sheetToObjects_('Participants').filter(x => String(x.program_id||'') === programId);
+  const grads = sheetToObjects_('Graduations').filter(x => String(x.program_id||'') === programId);
+  const latestByPid = {};
+  grads.forEach(g => {
+    const pid = String(g.participant_id||'');
+    if (!pid) return;
+    const ts = String(g.approved_at||'');
+    if (!latestByPid[pid] || String(latestByPid[pid].approved_at||'') < ts) latestByPid[pid] = g;
+  });
+
+  const setMap = {};
+  sheetToObjects_('Settings').forEach(r => { setMap[String(r.key||'').trim()] = String(r.value||''); });
+  const th = {
+    min_attendance_pct: num_(setMap.grad_min_attendance_pct),
+    min_apd_pct: num_(setMap.grad_min_apd_pct),
+    min_discipline_avg: num_(setMap.grad_min_discipline_avg),
+    min_avg_mutu: num_(setMap.grad_min_avg_mutu),
+    min_avg_tonnage: num_(setMap.grad_min_avg_tonnage),
+    max_losses_rate: num_(setMap.grad_max_losses_rate),
+  };
+  if (!isFinite(th.min_attendance_pct)) th.min_attendance_pct = 80;
+  if (!isFinite(th.min_apd_pct)) th.min_apd_pct = 80;
+  if (!isFinite(th.min_discipline_avg)) th.min_discipline_avg = 70;
+  if (!isFinite(th.min_avg_mutu)) th.min_avg_mutu = 75;
+  if (!isFinite(th.max_losses_rate)) th.max_losses_rate = 0.02;
+  if (!isFinite(th.min_avg_tonnage)) th.min_avg_tonnage = NaN;
+
+  const items = (participants||[]).map(pt => {
+    const pid = String(pt.participant_id||'').trim();
+    if (!pid) return null;
+    const arr = byPid[pid] || [];
+
+    const ton = avg_(arr.map(x => num_(x.tonnage)));
+    const disc = avg_(arr.map(x => num_(x.discipline_score)));
+    const hadirCount = arr.filter(x => String(x.attendance||'').trim().toLowerCase() === 'hadir').length;
+    const apdOkCount = arr.filter(x => String(x.apd_ok||'').trim().toLowerCase() === 'true').length;
+    const attendancePct = pct_(hadirCount, arr.length);
+    const apdPct = pct_(apdOkCount, arr.length);
+    const mutuNums = arr.map(x => num_(x.mutu_grade)).filter(v => isFinite(v));
+    const avgMutuNum = mutuNums.length ? avg_(mutuNums) : NaN;
+    const mutuText = isFinite(avgMutuNum) ? String(round2_(avgMutuNum)) : '';
+    const totalLosses = sum_(arr.map(x => num_(x.losses_brondolan)));
+    const totalTon = sum_(arr.map(x => num_(x.tonnage)));
+    const lossesRate = (isFinite(totalLosses) && isFinite(totalTon) && totalTon > 0) ? (totalLosses/totalTon) : NaN;
+
+    let recommended = 'REVIEW';
+    const okAttendance = (attendancePct >= th.min_attendance_pct);
+    const okApd = (apdPct >= th.min_apd_pct);
+    const okDisc = (!isFinite(disc) ? false : (disc >= th.min_discipline_avg));
+    const okMutu = (!isFinite(avgMutuNum) ? false : (avgMutuNum >= th.min_avg_mutu));
+    const okLoss = (!isFinite(lossesRate) ? true : (lossesRate <= th.max_losses_rate));
+    const okTon = (!isFinite(th.min_avg_tonnage) ? true : (isFinite(ton) && ton >= th.min_avg_tonnage));
+
+    if (arr.length === 0) recommended = 'BELUM_ADA_LOG';
+    else if (okAttendance && okApd && okDisc && okMutu && okLoss && okTon) recommended = 'REKOM_LULUS';
+    else recommended = 'REKOM_TIDAK_LULUS';
+
+    const g = latestByPid[pid] || {};
+    return {
+      program_id: programId,
+      participant_id: pid,
+      participant_name: pt.name || '',
+      participant_nik: pt.nik || '',
+      status: pt.status || '',
+      total_logs: String(arr.length || 0),
+      period_start,
+      period_end,
+      avg_tonnage: isFinite(ton) ? String(round2_(ton)) : '',
+      avg_mutu: mutuText || '',
+      losses_rate: isFinite(lossesRate) ? String(round4_(lossesRate)) : '',
+      attendance_pct: String(round2_(attendancePct || 0)),
+      apd_pct: String(round2_(apdPct || 0)),
+      discipline_avg: isFinite(disc) ? String(round2_(disc)) : '',
+      recommended,
+      decision: g.decision || '',
+      approved_at: g.approved_at || '',
+      approved_by: g.approved_by || ''
+    };
+  }).filter(Boolean);
+
+  items.sort((a,b)=> String(a.participant_name||'').localeCompare(String(b.participant_name||'')) || String(a.participant_nik||'').localeCompare(String(b.participant_nik||'')));
+  return { ok:true, period_start, period_end, thresholds: th, items };
+}
+
 
 function findWeeklyRecap_(programId, participantId, weekStart) {
   const recaps = sheetToObjects_('WeeklyRecaps').filter(x => String(x.program_id||'')===programId && String(x.participant_id||'')===participantId && String(x.week_start||'')===weekStart);
@@ -1558,10 +1859,12 @@ function weekNoFromStart_(programId, weekStartDateObj) {
   const programs = sheetToObjects_('Programs');
   const prog = programs.find(x => String(x.program_id||'') === String(programId||''));
   if (!prog || !prog.period_start) return '';
-  const start = new Date(String(prog.period_start) + 'T00:00:00');
+  const startIso = toISODate_(prog.period_start);
+  if (!startIso) return '';
+  const start = new Date(startIso + 'T00:00:00');
   if (isNaN(start.getTime())) return '';
-  const ws = weekStartMonday_(start);
-  const diffDays = Math.floor((weekStartDateObj.getTime() - ws.getTime()) / (24*3600*1000));
+  const ws0 = weekStartMonday_(start);
+  const diffDays = Math.floor((weekStartDateObj.getTime() - ws0.getTime()) / (24*3600*1000));
   return String(1 + Math.floor(diffDays / 7));
 }
 
@@ -2029,6 +2332,35 @@ function avg_(arr) {
   if (!xs.length) return NaN;
   return xs.reduce((a,b)=>a+b,0)/xs.length;
 }
+
+
+function sum_(arr) {
+  const xs = arr.filter(x => typeof x === 'number' && isFinite(x));
+  if (!xs.length) return 0;
+  return xs.reduce((a,b)=>a+b,0);
+}
+
+function round4_(n) {
+  return Math.round(n * 10000) / 10000;
+}
+
+function stableId_(prefix, seed) {
+  const s = String(seed||'');
+  const bytes = Utilities.computeDigest(Utilities.DigestAlgorithm.MD5, s, Utilities.Charset.UTF_8);
+  const hex = bytes.map(b => ('0' + (b & 0xFF).toString(16)).slice(-2)).join('');
+  return String(prefix||'ID') + '_' + hex.slice(0, 16);
+}
+
+function findRowByIdObj_(sheetKey, idCol, idVal) {
+  const key = normalizeHeader_(idCol);
+  const s = String(idVal||'');
+  const rows = sheetToObjects_(sheetKey);
+  for (let i=0;i<rows.length;i++){
+    if (String(rows[i][key]||'') === s) return rows[i];
+  }
+  return null;
+}
+
 
 function round2_(n) {
   return Math.round(n * 100) / 100;
@@ -2657,17 +2989,24 @@ function escapeHtml_(s) {
 
 
 
+
 function lookupParticipants_(sess, p) {
   const ctx = resolveProgramContext_(sess, p || {}, true);
-  const activeProgramId = ctx.program_id;
-  if (!activeProgramId) return { ok:false, error:'activeProgramId belum diset' };
+  let activeProgramId = ctx.program_id;
 
+  const role = String(sess.user.role||'').toUpperCase();
   const q = String(p.q||'').trim().toLowerCase();
   const category = String(p.category||'').trim(); // optional
 
-  // role mentor -> hanya mentee yang sedang ACTIVE pairing
+  // ADMIN boleh mode __ALL__ (tanpa filter program)
+  // Role MENTOR tetap wajib ada program aktif agar scope mentee jelas.
+  if (!activeProgramId && role === 'MENTOR') {
+    return { ok:false, error:'Pilih program dulu (mentor tidak bisa mode "Semua Program")' };
+  }
+
+  // role mentor -> hanya mentee yang sedang ACTIVE pairing (hanya berlaku jika ada program_id)
   let allowedIds = null;
-  if (String(sess.user.role||'').toUpperCase() === 'MENTOR') {
+  if (role === 'MENTOR' && activeProgramId) {
     const myMentor = sheetToObjects_('Mentors').find(m => String(m.nik||'') === String(sess.user.nik||''));
     const myMentorId = myMentor ? String(myMentor.mentor_id||'').trim() : '';
     const pairs = sheetToObjects_('Pairings').filter(x =>
@@ -2679,13 +3018,14 @@ function lookupParticipants_(sess, p) {
   }
 
   const parts = sheetToObjects_('Participants')
-    .filter(x => String(x.program_id||'')===activeProgramId)
+    .filter(x => !activeProgramId || String(x.program_id||'')===String(activeProgramId))
     .filter(x => !allowedIds || allowedIds.has(String(x.participant_id||'')))
     .filter(x => !category || String(x.category||'')===category)
     .filter(x => !q || String(x.name||'').toLowerCase().includes(q) || String(x.nik||'').toLowerCase().includes(q));
 
-  const items = parts.slice(0, 200).map(x => ({
+  const items = parts.slice(0, 300).map(x => ({
     participant_id: x.participant_id,
+    program_id: x.program_id || '',
     nik: x.nik || '',
     name: x.name || '',
     category: x.category || '',
@@ -2722,8 +3062,15 @@ function lookupMentors_(sess, p) {
 
 function getParticipantMentor_(sess, p) {
   const ctx = resolveProgramContext_(sess, p || {}, true);
-  const activeProgramId = ctx.program_id;
-  if (!activeProgramId) return { ok:false, error:'activeProgramId belum diset' };
+  let activeProgramId = ctx.program_id;
+  if (!activeProgramId) {
+    const pid0 = String(p.participant_id||'').trim();
+    if (pid0) {
+      const pt = sheetToObjects_('Participants').find(x => String(x.participant_id||'')===pid0);
+      activeProgramId = pt ? String(pt.program_id||'').trim() : '';
+    }
+  }
+  if (!activeProgramId) return { ok:false, error:'Pilih program dulu (atau pilih peserta yang valid)' };
   const participant_id = String(p.participant_id||'').trim();
   if (!participant_id) return { ok:false, error:'participant_id wajib' };
 
