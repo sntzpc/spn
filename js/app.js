@@ -76,11 +76,17 @@ function navChip(it) {
 }
 
 function buildNav(role) {
+  const R = (r)=>{
+    const x = String(r||'').trim().toUpperCase();
+    return x === 'ADMINISTRATOR' ? 'ADMIN' : x;
+  };
+  role = R(role);
+
   const common = [
-    { key:'dashboard', label:'Dashboard', icon:'📊' },
     { key:'sync', label:'Sinkronisasi', icon:'🔄' },
   ];
   const admin = [
+    { key:'dashboard', label:'Dashboard', icon:'📊' },
     { key:'programs', label:'Program', icon:'🗂️' },
     { key:'candidates', label:'Calon', icon:'🧾' },
     { key:'selection', label:'Seleksi', icon:'✅' },
@@ -92,6 +98,30 @@ function buildNav(role) {
     { key:'incentives', label:'Insentif', icon:'💰' },
     { key:'settings', label:'Pengaturan', icon:'⚙️' },
   ];
+
+  const manager = [
+    { key:'dashboard', label:'Dashboard', icon:'📊' },
+    { key:'programs', label:'Program', icon:'🗂️' },
+    { key:'candidates', label:'Calon', icon:'🧾' },
+    { key:'selection', label:'Seleksi', icon:'✅' },
+    { key:'participants', label:'Peserta', icon:'👷' },
+    { key:'mentors', label:'Mentor & Pairing', icon:'🤝' },
+    { key:'monitoring', label:'Monitoring', icon:'📝' },
+    { key:'graduation', label:'Kelulusan', icon:'🎓' },
+    { key:'certificates', label:'Sertifikat', icon:'📜' },
+    { key:'incentives', label:'Insentif', icon:'💰' },
+    { key:'settings', label:'Ganti PIN', icon:'⚙️' },
+  ];
+
+  const ktu = [
+    { key:'candidates', label:'Calon', icon:'🧾' },
+    { key:'selection', label:'Seleksi', icon:'✅' },
+    { key:'participants', label:'Peserta', icon:'👷' },
+    { key:'monitoring', label:'Monitoring', icon:'📝' },
+    { key:'certificates', label:'Sertifikat', icon:'📜' },
+    { key:'incentives', label:'Insentif', icon:'💰' },
+    { key:'settings', label:'Ganti PIN', icon:'⚙️' },
+  ];
   const asisten = [
     { key:'participants', label:'Peserta', icon:'👷' },
     { key:'mentors', label:'Pairing', icon:'🤝' },
@@ -99,8 +129,9 @@ function buildNav(role) {
     { key:'settings', label:'Ganti PIN', icon:'⚙️' },
   ];
   const mandor = [
-    { key:'monitoring', label:'Monitoring Harian', icon:'📝' },
     { key:'participants', label:'Peserta', icon:'👷' },
+    { key:'mentors', label:'Mentor & Pairing', icon:'🤝' },
+    { key:'monitoring', label:'Monitoring Harian', icon:'📝' },
     { key:'settings', label:'Ganti PIN', icon:'⚙️' },
   ];
   const mentor = [
@@ -108,10 +139,19 @@ function buildNav(role) {
     { key:'monitoring', label:'Log Harian', icon:'📝' },
     { key:'settings', label:'Ganti PIN', icon:'⚙️' },
   ];
+
+  const peserta = [
+    { key:'certificates', label:'Sertifikat Saya', icon:'📜' },
+    { key:'settings', label:'Ganti PIN', icon:'⚙️' },
+  ];
+
   if (role === 'ADMIN') return [...common, ...admin];
+  if (role === 'MANAGER') return [...common, ...manager];
+  if (role === 'KTU') return [...common, ...ktu];
   if (role === 'ASISTEN') return [...common, ...asisten];
   if (role === 'MANDOR') return [...common, ...mandor];
   if (role === 'MENTOR') return [...common, ...mentor];
+  if (role === 'PESERTA') return [...common, ...peserta];
   return common;
 }
 
@@ -186,10 +226,8 @@ async function preload() {
     state.activeProgramsByEstate = p.activeProgramsByEstate || {};
     state.estates = p.estates || state.estates || [];
     // Default program context:
-    // 1) ambil dari localStorage kalau masih valid
-    // 2) fallback ke program aktif untuk estate user
     const stored = (localStorage.getItem(CONFIG.PROGRAM_KEY) || '').trim();
-    const role = String(state.user?.role || '').toUpperCase();
+    const role = (String(state.user?.role || '').trim().toUpperCase()==='ADMINISTRATOR') ? 'ADMIN' : String(state.user?.role || '').trim().toUpperCase();
     const isAll = stored === '__ALL__';
 
     const exists =
@@ -287,6 +325,7 @@ function renderGlobalHeader_() {
   host.innerHTML = '';
 
   const role = state.user?.role || '';
+  const roleN = (String(role||'').trim().toUpperCase()==='ADMINISTRATOR') ? 'ADMIN' : String(role||'').trim().toUpperCase();
   const myEstate = state.myEstate || state.user?.estate || '';
   const activePid = state.myActiveProgramId || '';
 
@@ -303,7 +342,7 @@ function renderGlobalHeader_() {
     class:'w-full md:w-[420px] rounded-2xl border border-slate-200 dark:border-slate-800 bg-white/80 dark:bg-slate-900/70 px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-emerald-500'
   }, [
     // ADMIN bisa pilih semua program (tanpa filter)
-    ...(String(role||'').toUpperCase()==='ADMIN'
+    ...(roleN==='ADMIN'
       ? [h('option',{value:'__ALL__'}, 'Semua Program • (tanpa filter)')]
       : []),
     ...programs.map(p=>{
@@ -319,7 +358,7 @@ function renderGlobalHeader_() {
 
   const hint = (()=>{
     if (!myEstate) return 'Context Program (global)';
-    if (String(role||'').toUpperCase()==='ADMIN') {
+    if (roleN==='ADMIN') {
       return `Context Program • Estate saya: ${myEstate}${activePid?` (aktif: ${activePid.slice(0,8)}…)`:''}`;
     }
     return `Program aktif Estate ${myEstate}`;
@@ -646,7 +685,15 @@ function cacheInfoLine_(store, meta, extraText='') {
   return h('div',{class:'mb-3 text-xs text-slate-500 dark:text-slate-400'}, msg);
 }
 
+function roleNormFront_(role){
+  const r = String(role||'').trim().toUpperCase();
+  return (r === 'ADMINISTRATOR') ? 'ADMIN' : r;
+}
+
+
 async function renderDashboard() {
+  const role = roleNormFront_(state.user?.role || '');
+
   const selected = state.programs.find(x => String(x.program_id||'') === String(currentProgramId_()||'')) || null;
   const subtitle = selected
     ? `Context program: ${selected.name} • ${(selected.status||'').toUpperCase()} • ${formatDateDMYID(selected.period_start||'')}`
@@ -655,7 +702,7 @@ async function renderDashboard() {
   const v = setViewTitle('Dashboard', subtitle);
 
   // Admin: overview semua program + mapping aktif per estate (drilldown)
-  if ((state.user?.role||'').toUpperCase() === 'ADMIN') {
+  if (role === 'ADMIN') {
     const all = await callApi('dashboardAllPrograms', {});
     if (all && all.ok) {
       const estateRows = (all.estates||[]).map(r => ([
@@ -711,11 +758,21 @@ async function renderDashboard() {
   }
 
   const res = await callApi('dashboard', { program_id: currentProgramId_() || '' });
-  if (!res.ok) return v.appendChild(card([h('div',{class:'text-rose-600'}, res.error || 'Gagal load dashboard')]));
+  if (!res.ok) {
+    const msg = res.error || 'Gagal load dashboard';
+    const hint = (String(msg).toLowerCase().includes('activeprogramid') || String(msg).toLowerCase().includes('belum diset'))
+      ? 'Catatan: jika program aktif estate belum diset, buka menu Program lalu klik Jadikan Aktif pada program estate Anda.'
+      : '';
+    return v.appendChild(card([
+      h('div',{class:'text-rose-600 font-semibold'}, msg),
+      hint ? h('div',{class:'text-xs text-slate-500 dark:text-slate-400 mt-2'}, hint) : null,
+    ].filter(Boolean)));
+  }
 
   const s = res.stats || {};
+  const canSeeCandidates = (role === 'ADMIN' || role === 'MANAGER' || role === 'KTU');
   const cards = [
-    { key:'candidates', label:'Calon', value: s.candidates||0, hint:'Klik untuk lihat daftar', icon:'🧾' },
+    ...(canSeeCandidates ? [{ key:'candidates', label:'Calon', value: s.candidates||0, hint:'Klik untuk lihat daftar', icon:'🧾' }] : []),
     { key:'participants', label:'Peserta A/B', value: s.participants||0, hint:'Klik untuk lihat daftar', icon:'👷' },
     { key:'mentors', label:'Mentor', value: s.mentors||0, hint:'Klik untuk lihat daftar', icon:'🤝' },
     { key:'alerts', label:'Alert', value: s.alerts||0, hint:'Belum input log hari ini', icon:'⚠️' },
@@ -751,6 +808,41 @@ async function renderDashboard() {
 
   try { renderCharts(res.chartData || {}); } catch(e) {}
 }
+// Dashboard helper: preload mentors agar dashboard detail bisa tampilkan nama mentor (bukan ID)
+async function ensureMentorsDataForDashboard_(programId){
+  const pid = String(programId || '').trim();
+  if (!pid) return [];
+
+  // cache in-memory per program
+  if (window.__dashMentorsPid === pid && Array.isArray(window.mentorsData)) return window.mentorsData;
+
+  // 1) coba ambil dari IndexedDB dulu
+  let cached = [];
+  try { cached = await cacheGetAll('mentors', { program_id: pid }); } catch(e) {}
+  if (Array.isArray(cached) && cached.length) {
+    window.mentorsData = cached;
+    window.__dashMentorsPid = pid;
+    return cached;
+  }
+
+  // 2) kalau kosong, tarik dari server lalu cache
+  try {
+    const res = await callApi('listMentors', { program_id: pid });
+    if (res && res.ok) {
+      const serverMentors = (res.mentors || []).map(x => Object.assign({}, x, { __src:'SERVER', __local_pending:false }));
+      try {
+        await cacheReplace('mentors', normalizeRows_(serverMentors, 'mentor_id'), { program_id: pid });
+      } catch(e) {}
+      window.mentorsData = serverMentors;
+      window.__dashMentorsPid = pid;
+      return serverMentors;
+    }
+  } catch(e) {}
+
+  window.mentorsData = [];
+  window.__dashMentorsPid = pid;
+  return [];
+}
 
 function renderCharts(chartData){
   const byCat = chartData.participantsByCategory || {};
@@ -770,7 +862,20 @@ function renderCharts(chartData){
   donutEl._chart = new Chart(donutEl, {
     type: 'doughnut',
     data: { labels: donutLabels, datasets: [{ data: donutValues }] },
-    options: { responsive:true, plugins:{ legend:{ position:'bottom' } } }
+    options: {
+      responsive:true,
+      plugins:{ legend:{ position:'bottom' } },
+      onClick: (evt, elements) => {
+        try{
+          if (!elements || !elements.length) return;
+          const idx = elements[0].index;
+          const cat = donutLabels[idx];
+          if (!cat) return;
+          // Klik donut => buka detail peserta per kategori
+          openDashboardDetail('participants', `Peserta Kategori ${cat}`, { category: cat });
+        } catch(e) {}
+      }
+    }
   });
 
   barEl._chart = new Chart(barEl, {
@@ -780,7 +885,14 @@ function renderCharts(chartData){
   });
 }
 
-async function openDashboardDetail(type, title){
+async function openDashboardDetail(type, title, extraParams={}){
+  const role = roleNormFront_(state.user?.role || '');
+
+  if (type === 'candidates' && !(role === 'ADMIN' || role === 'MANAGER' || role === 'KTU')) {
+    toast('Akses ditolak: hanya ADMIN/MANAGER/KTU', 'error');
+    return;
+  }
+
   const holder = h('div',{class:'mt-1'},[
     h('div',{class:'text-sm text-slate-500 dark:text-slate-400'},'Memuat...')
   ]);
@@ -793,7 +905,20 @@ async function openDashboardDetail(type, title){
 
   body.appendChild(holder);
 
-  const r = await callApi('dashboardDetail', { type, program_id: currentProgramId_() || '' });
+  // PRELOAD mentors agar tabel peserta/alert bisa tampilkan nama mentor (bukan mentor_id)
+  const pid = currentProgramId_() || '';
+  let mentorsData = [];
+  if (type === 'participants' || type === 'alerts') {
+    mentorsData = await ensureMentorsDataForDashboard_(pid);
+  }
+  const mentorMap = new Map((mentorsData||[]).map(m => [String(m.mentor_id||''), m]));
+
+  const payload = Object.assign(
+    { type, program_id: pid },
+    (extraParams && typeof extraParams === 'object') ? extraParams : {}
+  );
+
+  const r = await callApi('dashboardDetail', payload);
   if (!r.ok) {
     holder.innerHTML = '';
     holder.appendChild(h('div',{class:'text-rose-600'}, r.error||'Gagal'));
@@ -805,21 +930,73 @@ async function openDashboardDetail(type, title){
   if (!items.length) return holder.appendChild(h('div',{class:'text-slate-500'}, 'Tidak ada data'));
 
   if (type === 'alerts') {
-    holder.appendChild(table(['NIK','Nama','Kategori'], items.map(x=>[x.nik||'-', x.name||'-', x.category||'-'])));
+    // Non-ADMIN: sebelumnya backend sudah kirim estate/divisi tapi UI tidak menampilkan => sekarang ditampilkan + nama mentor
+    holder.appendChild(table(
+      ['NIK','Nama','Kategori','Estate','Divisi','Mentor'],
+      items.map(x=>{
+        const mid = String(x.mentor_id || '').trim();
+        const mentor = mentorMap.get(mid);
+        const mentorName = mentor?.name || x.mentor_name || (mid || '-');
+        return [
+          x.nik||'-',
+          x.name||'-',
+          x.category||'-',
+          x.estate||'-',
+          x.divisi||'-',
+          mentorName
+        ];
+      })
+    ));
   } else if (type === 'candidates') {
-    holder.appendChild(table(['NIK','Nama','Status','Updated'], items.map(x=>[x.nik||'-', x.name||'-', x.status||'-', (x.updated_at||x.created_at||'')])));
+    holder.appendChild(table(['NIK','Nama','Status','Updated'], items.map(x=>{
+      const dateStr = x.updated_at || x.created_at;
+      let displayDate = '-';
+      if (dateStr && typeof dateStr === 'string' && dateStr.trim() !== '') {
+        try { const formatted = formatDateISO(dateStr);  displayDate = (formatted && !formatted.includes('NaN')) ? formatted : '-'; } catch { displayDate = '-';}
+      }
+      return [x.nik || '-', x.name || '-', x.status || '-', displayDate ];
+    })));
   } else if (type === 'participants') {
-    holder.appendChild(table(['NIK','Nama','Kategori','Status','Mentor'], items.map(x=>[x.nik||'-', x.name||'-', x.category||'-', x.status||'-', x.mentor_id||'-'])));
+    holder.appendChild(table(
+      ['NIK','Nama','Kategori','Status','Estate','Divisi','Mentor'],
+      items.map(x=>{
+        const mid = String(x.mentor_id || '').trim();
+        const mentor = mentorMap.get(mid);
+        const mentorName = mentor?.name || x.mentor_name || (mid || '-');
+        return [
+          x.nik||'-',
+          x.name||'-',
+          x.category||'-',
+          x.status||'-',
+          x.estate||'-',
+          x.divisi||'-',
+          mentorName
+        ];
+      })
+    ));
   } else if (type === 'mentors') {
     holder.appendChild(table(['NIK','Nama','Status'], items.map(x=>[x.nik||'-', x.name||'-', x.status||'-'])));
   } else {
-    holder.appendChild(h('pre',{class:'text-xs whitespace-pre-wrap'}, JSON.stringify(items.slice(0,100),null,2)));
+    holder.appendChild(pre(JSON.stringify(items, null, 2)));
   }
 }
 
 async function renderPrograms(opts={}) {
   const skipBg = !!opts.skipBg;
   const v = setViewTitle('Program', 'Kelola batch Sekolah Pemanen');
+
+  const roleN = (String(state.user?.role||'').trim().toUpperCase()==='ADMINISTRATOR')
+    ? 'ADMIN'
+    : String(state.user?.role||'').trim().toUpperCase();
+
+  const isAdmin = roleN === 'ADMIN';
+  const isManager = roleN === 'MANAGER';
+
+  // ADMIN & MANAGER boleh buat program. KTU tidak.
+  const canCreateProgram = isAdmin || isManager;
+
+  // ADMIN & MANAGER boleh set ACTIVE / close (backend sudah guard scope untuk MANAGER).
+  const canManagePrograms = isAdmin || isManager;
 
   // Local-first: render cache immediately (programs + master estates), refresh server in background.
   const cachedPrograms = await cacheGetAll('programs', { estate: '' });
@@ -844,17 +1021,19 @@ async function renderPrograms(opts={}) {
     }).catch(()=>{});
   }
 
-  const top = h('div', { class:'flex flex-col md:flex-row md:items-center gap-3 mb-4' }, [
+    const top = h('div', { class:'flex flex-col md:flex-row md:items-center gap-3 mb-4' }, [
     h('div', { class:'text-sm text-slate-500 dark:text-slate-400' }, 'Pilih program aktif untuk operasional harian.'),
     h('div', { class:'md:ml-auto flex gap-2' }, [
-      h('button', { id:'btnNewProgram', class:'rounded-2xl px-4 py-2 bg-emerald-600 text-white hover:bg-emerald-700 text-sm' }, 'Buat Program'),
+      ...(canCreateProgram ? [
+        h('button', { id:'btnNewProgram', class:'rounded-2xl px-4 py-2 bg-emerald-600 text-white hover:bg-emerald-700 text-sm' }, 'Buat Program')
+      ] : []),
       h('button', { class:'rounded-2xl px-4 py-2 border border-slate-200 dark:border-slate-800 text-sm', onclick: ()=>preload().then(()=>renderPrograms()) }, 'Refresh')
     ])
   ]);
   v.appendChild(top);
 
   // Admin: set active program per estate (parallel multi-estate)
-  if ((state.user?.role||'').toUpperCase() === 'ADMIN') {
+  if (isAdmin) {
     const estates = (state.estates || []).slice().sort((a,b)=>String(a.estate_code||'').localeCompare(String(b.estate_code||'')));
     const progOptions = (state.programs || []).filter(p => String(p.status||'').toUpperCase() !== 'CLOSED');
     const curEstate = (state.myEstate || (state.user&&state.user.estate) || (estates[0]&&estates[0].estate_code) || '').toUpperCase();
@@ -901,17 +1080,15 @@ async function renderPrograms(opts={}) {
     const st = String(p.status||'').toUpperCase() || 'DRAFT';
 
     // One main action button (per requirement):
-    // - DRAFT => Jadikan Aktif
-    // - ACTIVE => Tutup
-    // - else => (none)
     const actionEl = (()=>{
+      if (!canManagePrograms) return h('span',{class:'text-xs text-slate-500 dark:text-slate-400'},'-');
       if (st === 'DRAFT') {
         return h('button', {
           class:'rounded-xl px-3 py-2 text-xs bg-slate-900 text-white dark:bg-slate-100 dark:text-slate-900',
           onclick: async ()=>{
-            const estate_code = (state.user?.role||'').toUpperCase()==='ADMIN'
+            const estate_code = isAdmin
               ? String((document.getElementById('adminEstateSel') && document.getElementById('adminEstateSel').value) || state.myEstate || '').trim().toUpperCase()
-              : String(state.myEstate||'').trim().toUpperCase();
+              : String((state.myEstate || (state.user&&state.user.estate) || '')).trim().toUpperCase();
             const r = await callApi('setActiveProgram', { program_id: p.program_id, estate_code });
             if (!r.ok) return toast(r.error||'Gagal set active', 'error');
             toast('Program diaktifkan', 'ok');
@@ -969,21 +1146,35 @@ async function renderPrograms(opts={}) {
     ])
   ]));
 
-  document.getElementById('btnNewProgram').onclick = () => openProgramModal();
+  const btnNP = document.getElementById('btnNewProgram');
+  if (btnNP) btnNP.onclick = () => openProgramModal();
 }
 
 function openProgramModal() {
+  const roleN = (String(state.user?.role||'').trim().toUpperCase()==='ADMINISTRATOR')
+    ? 'ADMIN'
+    : String(state.user?.role||'').trim().toUpperCase();
+
+  const isManager = roleN === 'MANAGER';
+  const myEstate = String(state.myEstate || (state.user && state.user.estate) || '').trim().toUpperCase();
+
   const { body, close } = openModal_({
     title: 'Buat Program Baru',
-    subtitle: 'Header tetap, isi form bisa di-scroll (mobile friendly).',
+    subtitle: 'Isi form sesuai dengan contoh.',
     maxWidth: 'max-w-2xl'
   });
 
+  // period default: start hari ini, end +2 bulan
+  const start = new Date();
+  const end = new Date(start);
+  end.setMonth(end.getMonth() + 2);
+
   body.appendChild(h('div',{class:'grid md:grid-cols-2 gap-3'},[
-    field('Nama Program','name','Sekolah Pemanen - Batch 01'),
-    field('Lokasi','location','Estate / TC'),
-    field('Mulai (YYYY-MM-DD)','period_start', formatDateISO(new Date())),
-    field('Selesai (YYYY-MM-DD)','period_end', ''),
+    field('Nama Program','name','SP-BDU-SRIE-2026-B1'),
+    // MANAGER: lokasi terkunci & otomatis myEstate
+    field('Lokasi','location','Estate / TC', { locked: isManager, value: (isManager ? myEstate : '') }),
+    field('Mulai (YYYY-MM-DD)','period_start', formatDateISO(start)),
+    field('Selesai (YYYY-MM-DD)','period_end', formatDateISO(end)),
     field('Kuota','quota','30'),
   ]));
 
@@ -997,13 +1188,16 @@ function openProgramModal() {
 
   document.getElementById('btnSaveProgram').onclick = async ()=>{
     const btn = document.getElementById('btnSaveProgram');
+
+    // IMPORTANT: untuk MANAGER, paksa location = myEstate
     const payload = {
       name: val('name'),
-      location: val('location'),
+      location: isManager ? myEstate : val('location'),
       period_start: val('period_start'),
       period_end: val('period_end'),
       quota: val('quota')
     };
+
     btnBusy(btn,true,'Menyimpan...');
     try{
       const r = await callApi('createProgram', payload);
@@ -1019,13 +1213,31 @@ function openProgramModal() {
     }
   };
 
-  function field(label,id,ph){
+  function field(label,id,ph, opts={}){
+    const locked = !!opts.locked;
+
+    // Bangun props input TANPA mengirim readOnly kalau tidak locked
+    const inputProps = {
+      id,
+      placeholder: ph || '',
+      class:
+        'mt-1 w-full rounded-2xl border border-slate-200 dark:border-slate-800 ' +
+        'bg-white dark:bg-slate-900 px-4 py-3 outline-none focus:ring-2 focus:ring-emerald-500 ' +
+        (locked ? 'opacity-80 cursor-not-allowed' : '')
+    };
+
+    if (opts.value !== undefined) inputProps.value = String(opts.value);
+
+    // HANYA set readOnly ketika locked (hindari readonly="false")
+    if (locked) inputProps.readOnly = true;
+
     return h('div',{},[
       h('label',{class:'text-sm text-slate-600 dark:text-slate-300'},label),
-      h('input',{id, placeholder:ph||'', class:'mt-1 w-full rounded-2xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 px-4 py-3 outline-none focus:ring-2 focus:ring-emerald-500'})
+      h('input', inputProps)
     ]);
   }
-  function val(id){ return (document.getElementById(id).value||'').trim(); }
+
+  function val(id){ return (document.getElementById(id)?.value||'').trim(); }
 }
 
 function selectField(label, id, options, value) {
@@ -1043,11 +1255,21 @@ async function renderCandidates() {
   const v = setViewTitle('Calon Pemanen', 'Administrasi & verifikasi berkas');
   const pid = currentProgramId_();
 
+    const roleN = (String(state.user?.role||'').trim().toUpperCase()==='ADMINISTRATOR')
+    ? 'ADMIN'
+    : String(state.user?.role||'').trim().toUpperCase();
+
+  const canAddCandidate = ['ADMIN','MANAGER','KTU'].includes(roleN);
+  const canVerifyCandidate = ['ADMIN'].includes(roleN);
+
+
   const info = h('div',{class:'mb-3 text-xs text-slate-500 dark:text-slate-400'},'Memuat dari cache...');
   v.appendChild(info);
 
-  const actions = h('div',{class:'flex gap-2 mb-4'},[
-    h('button',{class:'rounded-2xl px-4 py-2 bg-emerald-600 text-white hover:bg-emerald-700 text-sm', onclick:()=>openCandidateModal()},'Tambah Calon'),
+    const actions = h('div',{class:'flex gap-2 mb-4'},[
+    ...(canAddCandidate ? [
+      h('button',{class:'rounded-2xl px-4 py-2 bg-emerald-600 text-white hover:bg-emerald-700 text-sm', onclick:()=>openCandidateModal()},'Tambah Calon')
+    ] : []),
     h('button',{class:'rounded-2xl px-4 py-2 border border-slate-200 dark:border-slate-800 text-sm', onclick:()=>renderCandidates()},'Refresh'),
   ]);
   v.appendChild(actions);
@@ -1078,9 +1300,14 @@ async function renderCandidates() {
         c.applied_at ? formatDateDMYID(c.applied_at) : '-',
         docsBadge_(c),
         h('div',{class:'flex flex-wrap gap-2'},[
-          h('button',{class:'rounded-xl px-3 py-2 text-xs border border-slate-200 dark:border-slate-800', onclick:()=>openCandidateModal(c)},'Edit'),
-          h('button',{class:'rounded-xl px-3 py-2 text-xs bg-slate-900 text-white dark:bg-slate-100 dark:text-slate-900', onclick:()=>verifyCandidate(c,'VERIFIED')},'Verifikasi'),
-          h('button',{class:'rounded-xl px-3 py-2 text-xs bg-rose-600 text-white', onclick:()=>verifyCandidate(c,'REJECTED')},'Tolak'),
+          ...(canAddCandidate ? [
+            h('button',{class:'rounded-xl px-3 py-2 text-xs border border-slate-200 dark:border-slate-800', onclick:()=>openCandidateModal(c)},'Edit'),
+          ] : [h('span',{class:'text-xs text-slate-500 dark:text-slate-400'},'-')]),
+
+          ...(canVerifyCandidate ? [
+            h('button',{class:'rounded-xl px-3 py-2 text-xs bg-slate-900 text-white dark:bg-slate-100 dark:text-slate-900', onclick:()=>verifyCandidate(c,'VERIFIED')},'Verifikasi'),
+            h('button',{class:'rounded-xl px-3 py-2 text-xs bg-rose-600 text-white', onclick:()=>verifyCandidate(c,'REJECTED')},'Tolak'),
+          ] : []),
         ])
       ]));
 
@@ -1125,14 +1352,23 @@ async function verifyCandidate(c, status) {
 }
 
 function openCandidateModal(cand=null) {
+  const roleN = (String(state.user?.role||'').trim().toUpperCase()==='ADMINISTRATOR')
+    ? 'ADMIN'
+    : String(state.user?.role||'').trim().toUpperCase();
+
+  const canAddCandidate = ['ADMIN','MANAGER','KTU'].includes(roleN);
+  if (!canAddCandidate) {
+    toast('Role Anda tidak memiliki hak untuk menambah/mengubah calon.', 'error');
+    return;
+  }
   const { body, close, modal, overlay } = openModal_({
     title: cand ? 'Edit Calon' : 'Tambah Calon',
-    subtitle: 'Header tetap, isi form bisa di-scroll (mobile friendly).',
+    subtitle: 'Isi form sesuai dengan contoh.',
     maxWidth: 'max-w-3xl'
   });
 
   body.appendChild(h('div',{class:'grid md:grid-cols-3 gap-3'},[
-    f('NIK','nik','contoh: 202602001'),
+    f('NIK','nik','contoh: 14023'),
     f('Nama','name',''),
     f('Gender (L/P)','gender','L'),
     f('Tanggal Lahir','dob','dd-mm-yyyy / yyyy'),
@@ -1275,8 +1511,10 @@ function openCandidateModal(cand=null) {
       }
 
       const localId = cand?.candidate_id || (crypto?.randomUUID ? crypto.randomUUID() : ('loc_' + Date.now() + '_' + Math.random().toString(36).slice(2)));
+
       const payload = {
-        candidate_id: localId,
+        // ✅ hanya kirim candidate_id jika EDIT
+        ...(cand?.candidate_id ? { candidate_id: cand.candidate_id } : {}),
         nik: val('nik'),
         name: val('name'),
         gender: val('gender'),
@@ -1294,7 +1532,6 @@ function openCandidateModal(cand=null) {
           && (cand?.family_id || '').trim()
         ) ? '1' : '',
         address: (document.getElementById('address').value||'').trim(),
-
         docs_ktp: (cand?.docs_ktp || '').trim(),
         docs_kk: (cand?.docs_kk || '').trim(),
         docs_skck: (cand?.docs_skck || '').trim(),
@@ -1631,17 +1868,23 @@ async function renderParticipants() {
 
   const v = setViewTitle('Peserta', 'Daftar peserta aktif (A/B) per program');
   const pid = currentProgramId_();
+  const roleN = (String(state.user?.role||'').trim().toUpperCase()==='ADMINISTRATOR') ? 'ADMIN' : String(state.user?.role||'').trim().toUpperCase();
+  const isAdmin = roleN === 'ADMIN';
+  const isManager = roleN === 'MANAGER';
+  const canManagePrograms = isAdmin || isManager;
+  const canGenerate = (roleN==='ADMIN' || roleN==='MANAGER' || roleN==='KTU');
+  const canPlace = (roleN==='ADMIN' || roleN==='MANAGER' || roleN==='ASISTEN');
 
   const info = h('div',{class:'mb-3 text-xs text-slate-500 dark:text-slate-400'},'Memuat dari cache...');
   v.appendChild(info);
 
-  const top = h('div',{class:'flex gap-2 mb-4'},[
-    h('button',{class:'rounded-2xl px-4 py-2 bg-emerald-600 text-white hover:bg-emerald-700 text-sm', onclick:async ()=>{
+  const top = h('div',{class:'flex gap-2 mb-4 flex-wrap'},[
+    ...(canGenerate ? [h('button',{class:'rounded-2xl px-4 py-2 bg-emerald-600 text-white hover:bg-emerald-700 text-sm', onclick:async ()=>{
       const r = await callApi('generateParticipantsFromSelection', { program_id: currentProgramId_() });
       if (!r.ok) return toast(r.error||'Gagal', 'error');
       toast(`Generate selesai: +${r.created||0}`, 'ok');
       renderParticipants();
-    }},'Generate dari Seleksi (A/B)'),
+    }},'Generate dari Seleksi (A/B)')] : []),
     h('button',{class:'rounded-2xl px-4 py-2 border border-slate-200 dark:border-slate-800 text-sm', onclick:()=>renderParticipants()},'Refresh'),
   ]);
   v.appendChild(top);
@@ -1665,7 +1908,9 @@ async function renderParticipants() {
       const rows = (state.participants||[]).map(p=>[
         srcBadge_(rowSrc_(p), !!p.__local_pending),
         p.nik, p.name, badge(p.category||'-'), badge(p.status||'-'), p.mentor_name || '-',
-        h('button',{class:'rounded-xl px-3 py-2 text-xs border border-slate-200 dark:border-slate-800', onclick:()=>openPlacementModal(p)},'Penempatan')
+        (canPlace
+          ? h('button',{class:'rounded-xl px-3 py-2 text-xs border border-slate-200 dark:border-slate-800', onclick:()=>openPlacementModal(p)},'Penempatan')
+          : h('span',{class:'text-xs text-slate-500 dark:text-slate-400'},'-'))
       ]);
 
       host.innerHTML = '';
@@ -1738,13 +1983,15 @@ async function renderMentors() {
 
   const v = setViewTitle('Mentor & Pairing', 'Kelola mentor dan pairing 1-on-1 untuk peserta kategori B');
   const pid = currentProgramId_();
+  const roleN = (String(state.user?.role||'').trim().toUpperCase()==='ADMINISTRATOR') ? 'ADMIN' : String(state.user?.role||'').trim().toUpperCase();
+  const canEditMentor = (roleN==='ADMIN' || roleN==='MANAGER' || roleN==='ASISTEN');
 
   const info = h('div',{class:'mb-3 text-xs text-slate-500 dark:text-slate-400'},'Memuat dari cache...');
   v.appendChild(info);
 
   const top = h('div',{class:'flex flex-col md:flex-row md:items-center gap-2 mb-4'},[
     h('div',{class:'flex gap-2'},[
-      h('button',{class:'rounded-2xl px-4 py-2 bg-emerald-600 text-white hover:bg-emerald-700 text-sm', onclick:()=>openMentorModal()},'Tambah Mentor'),
+      ...(canEditMentor ? [h('button',{class:'rounded-2xl px-4 py-2 bg-emerald-600 text-white hover:bg-emerald-700 text-sm', onclick:()=>openMentorModal()},'Tambah Mentor')] : []),
       h('button',{class:'rounded-2xl px-4 py-2 border border-slate-200 dark:border-slate-800 text-sm', onclick:()=>renderMentors()},'Refresh'),
     ]),
     h('div',{class:'md:ml-auto text-xs text-slate-500 dark:text-slate-400'},'Tips: Pairing hanya untuk peserta kategori B.')
@@ -1792,7 +2039,10 @@ async function renderMentors() {
     host.appendChild(card([
       h('div',{class:'flex items-center justify-between mb-3'},[
         h('div',{class:'text-sm font-semibold'},'Mentor'),
-        h('button',{class:'rounded-xl px-3 py-2 text-xs bg-slate-900 text-white dark:bg-slate-100 dark:text-slate-900', onclick:()=>openMentorModal()},'Tambah')
+        (canEditMentor
+          ? h('button',{class:'rounded-xl px-3 py-2 text-xs bg-slate-900 text-white dark:bg-slate-100 dark:text-slate-900', onclick:()=>openMentorModal()},'Tambah')
+          : h('span',{class:'text-xs text-slate-500 dark:text-slate-400'},'')
+        )
       ]),
       table(['SRC','NIK','Nama','Status','Aksi'], mentorRows)
     ]));
@@ -2699,12 +2949,14 @@ async function renderCertificates(){
 
   const v = setViewTitle('Sertifikat', 'Terbitkan sertifikat peserta & mentor');
   const pid = currentProgramId_();
+  const roleN = (String(state.user?.role||'').trim().toUpperCase()==='ADMINISTRATOR') ? 'ADMIN' : String(state.user?.role||'').trim().toUpperCase();
+  const canIssue = (roleN==='ADMIN' || roleN==='MANAGER' || roleN==='KTU');
 
   const info = h('div',{class:'mb-3 text-xs text-slate-500 dark:text-slate-400'},'Memuat dari cache...');
   v.appendChild(info);
 
   const top = h('div',{class:'flex flex-wrap gap-2 mb-4'},[
-    h('button',{class:'rounded-2xl px-4 py-2 bg-emerald-600 text-white hover:bg-emerald-700 text-sm', onclick:async ()=>{
+    ...(canIssue ? [h('button',{class:'rounded-2xl px-4 py-2 bg-emerald-600 text-white hover:bg-emerald-700 text-sm', onclick:async ()=>{
       const pidP = prompt('participant_id untuk terbitkan sertifikat peserta:','');
       if(!pidP) return;
       const payload = { person_type:'PESERTA', person_id: pidP };
@@ -2728,9 +2980,9 @@ async function renderCertificates(){
 
       toast(rr.queued ? 'Di-antrikan (offline).' : 'Sertifikat peserta diterbitkan','ok');
       renderCertificates();
-    }},'Terbitkan Sertifikat Peserta'),
+    }},'Terbitkan Sertifikat Peserta')] : []),
 
-    h('button',{class:'rounded-2xl px-4 py-2 border border-slate-200 dark:border-slate-800 text-sm', onclick:async ()=>{
+    ...(canIssue ? [h('button',{class:'rounded-2xl px-4 py-2 border border-slate-200 dark:border-slate-800 text-sm', onclick:async ()=>{
       const mid = prompt('mentor_id untuk terbitkan sertifikat mentor:','');
       if(!mid) return;
       const payload = { person_type:'MENTOR', person_id: mid };
@@ -2754,7 +3006,7 @@ async function renderCertificates(){
 
       toast(rr.queued ? 'Di-antrikan (offline).' : 'Sertifikat mentor diterbitkan','ok');
       renderCertificates();
-    }},'Terbitkan Sertifikat Mentor'),
+    }},'Terbitkan Sertifikat Mentor')] : []),
 
     h('button',{class:'rounded-2xl px-4 py-2 border border-slate-200 dark:border-slate-800 text-sm', onclick:()=>renderCertificates()},'Refresh'),
   ]);
@@ -2871,7 +3123,7 @@ async function renderMyMentee(){
 
 // -------------------- Settings (Admin + Change PIN) --------------------
 async function renderSettings(){
-  const isAdmin = (state.user?.role === 'ADMIN');
+  const isAdmin = ((String(state.user?.role||'').trim().toUpperCase()==='ADMIN') || (String(state.user?.role||'').trim().toUpperCase()==='ADMINISTRATOR'));
   const v = setViewTitle('Pengaturan', isAdmin ? 'Konfigurasi aplikasi, logo, dan user' : 'Ganti PIN Anda');
 
   async function loadSettingsCached_(estateCode=''){
@@ -3351,7 +3603,8 @@ function openUserModal(user, onDone){
 // SINKRONISASI (Offline-first)
 // ======================
 async function renderSync() {
-  const role = String(state.user?.role||'').toUpperCase();
+  const roleRaw = String(state.user?.role||'').trim().toUpperCase();
+  const role = (roleRaw === 'ADMINISTRATOR') ? 'ADMIN' : roleRaw;
   const v = setViewTitle('Sinkronisasi', 'Tarik data ke IndexedDB & kirim antrian (outbox) ke server');
 
   const pid = currentProgramId_();
@@ -3380,29 +3633,112 @@ async function renderSync() {
   ]);
   v.appendChild(info);
 
+  // NOTE: tiap scope diikat ke action backend. Kalau role tidak boleh akses action tersebut,
+  // checkbox akan otomatis DISABLE (tidak ikut pull, tidak masuk cache).
   const scopes = [
-    { key:'programs', label:'Programs (master)', adminOnly:false },
-    { key:'master_estates', label:'MasterEstates (master)', adminOnly:true },
-    { key:'users', label:'Users (master)', adminOnly:true },
-    { key:'settings', label:'Settings (master)', adminOnly:true },
-    { key:'candidates', label:'Candidates', adminOnly:false, needsProgram:true },
-    { key:'selection', label:'SelectionResults (view)', adminOnly:false, needsProgram:true },
-    { key:'participants', label:'Participants', adminOnly:false, needsProgram:true },
-    { key:'mentors', label:'Mentors', adminOnly:false, needsProgram:true },
-    { key:'pairings', label:'Pairings', adminOnly:false, needsProgram:true },
-    { key:'daily_logs', label:'DailyLogs', adminOnly:false, needsProgram:true },
-    { key:'graduations', label:'Graduations', adminOnly:false, needsProgram:true },
-    { key:'certificates', label:'Certificates', adminOnly:false, needsProgram:true },
-    { key:'incentives', label:'MentorIncentives', adminOnly:false, needsProgram:true },
+    { key:'programs', label:'Programs (master)', action:'listPrograms', adminOnly:false },
+    { key:'master_estates', label:'MasterEstates (master)', action:'listMasterEstates', adminOnly:true },
+    { key:'users', label:'Users (master)', action:'listUsers', adminOnly:true },
+    { key:'settings', label:'Settings (master)', action:'getSettings', adminOnly:true },
+
+    { key:'candidates', label:'Candidates', action:'listCandidates', adminOnly:false, needsProgram:true },
+    { key:'selection', label:'SelectionResults (view)', action:'listSelection', adminOnly:false, needsProgram:true },
+    { key:'participants', label:'Participants', action:'listParticipants', adminOnly:false, needsProgram:true },
+
+    // mentors & pairings sama-sama dari endpoint listMentors
+    { key:'mentors', label:'Mentors', action:'listMentors', adminOnly:false, needsProgram:true },
+    { key:'pairings', label:'Pairings', action:'listMentors', adminOnly:false, needsProgram:true },
+
+    { key:'daily_logs', label:'DailyLogs', action:'getDailyLogs', adminOnly:false, needsProgram:true },
+    { key:'graduations', label:'Graduations', action:'listGraduation', adminOnly:false, needsProgram:true },
+    { key:'certificates', label:'Certificates', action:'listCertificates', adminOnly:false, needsProgram:true },
+    { key:'incentives', label:'MentorIncentives', action:'listMentorIncentives', adminOnly:false, needsProgram:true },
   ];
+
+  // Normalize perms/actions supaya tidak gagal gara-gara beda format (array/string/json/object)
+  function _normalizeActionName(x){
+    let s = String(x || '').trim().toLowerCase();
+    if (!s) return '';
+    // buang prefix yang kadang ikut kebawa
+    s = s.replace(/^action\s*[:=]\s*/,'');
+    s = s.replace(/^action=/,'');
+    return s.trim();
+  }
+
+  function _extractActions(raw){
+    // raw bisa: array | string "a,b" | string JSON '["a","b"]' | object {a:true}
+    if (raw === null || raw === undefined) return [];
+
+    // jika JSON string
+    if (typeof raw === 'string') {
+      const t = raw.trim();
+      if (!t) return [];
+      if ((t.startsWith('[') && t.endsWith(']')) || (t.startsWith('{') && t.endsWith('}'))) {
+        try { return _extractActions(JSON.parse(t)); } catch(e) { /* lanjut split biasa */ }
+      }
+      // CSV / spaced list
+      return t.split(/[,;\n\r\t ]+/).map(s=>s.trim()).filter(Boolean);
+    }
+
+    if (Array.isArray(raw)) return raw;
+
+    if (typeof raw === 'object') {
+      // beberapa bentuk object yang mungkin
+      if (Array.isArray(raw.actions)) return raw.actions;
+      if (Array.isArray(raw.allowed)) return raw.allowed;
+      // kalau object map: {listPrograms:true,...}
+      return Object.keys(raw || {});
+    }
+    
+    return [];
+    
+  }
+
+  const rawActs =
+    (state.user && state.user.perms ? state.user.perms.actions : undefined) ??
+    (state.user ? state.user.actions : undefined) ??
+    [];
+
+  const allowedActions = new Set(
+    _extractActions(rawActs)
+      .map(_normalizeActionName)
+      .filter(Boolean)
+  );
+
+  // Helper: cek izin action
+  const canAction = (action) => {
+    const a = _normalizeActionName(action);
+    if (!a) return true;
+
+    // ✅ ADMIN selalu boleh sync semua scope
+    if (role === 'ADMIN') return true;
+
+    // Jika backend belum kirim perms → jangan mengunci total
+    if (!allowedActions.size) return true;
+
+    // dukung wildcard (jika suatu saat dipakai)
+    if (allowedActions.has('*') || allowedActions.has('all')) return true;
+
+    return allowedActions.has(a);
+  };
 
   const scopeBox = h('div',{class:'grid md:grid-cols-2 gap-2'},
     scopes
       .filter(s=> !s.adminOnly || role==='ADMIN')
-      .map(s=>h('label',{class:'flex items-center gap-2 p-3 rounded-2xl border border-slate-200 dark:border-slate-800 bg-white/60 dark:bg-slate-950/40'},[
-        h('input',{type:'checkbox', id:'sc_'+s.key, checked:true}),
-        h('span',{class:'text-sm'}, s.label)
-      ]))
+      .map(s=>{
+        const allowed = canAction(s.action) && (!s.adminOnly || role==='ADMIN');
+        const disabled = !allowed;
+
+        return h('label',{
+          class:'flex items-start gap-2 p-3 rounded-2xl border border-slate-200 dark:border-slate-800 bg-white/60 dark:bg-slate-950/40 ' + (disabled?'opacity-60':'')
+        },[
+          h('input',{type:'checkbox', id:'sc_'+s.key, checked: !!allowed, disabled: !!disabled, class:'mt-1'}),
+          h('div',{class:'min-w-0'},[
+            h('div',{class:'text-sm'}, s.label),
+            disabled ? h('div',{class:'text-[11px] text-slate-500 dark:text-slate-400 mt-0.5'},'Tidak diizinkan untuk role ini') : null,
+          ])
+        ]);
+      })
   );
 
   const adminEstateSel = (role==='ADMIN') ? h('div',{class:'mt-3'},[
@@ -3448,10 +3784,14 @@ async function renderSync() {
   const getSelectedScopes = ()=>{
     return scopes
       .filter(s=> (!s.adminOnly || role==='ADMIN'))
-      .filter(s=> !!document.getElementById('sc_'+s.key)?.checked)
+      .filter(s=> {
+        const el = document.getElementById('sc_'+s.key);
+        if (!el) return false;
+        if (el.disabled) return false;
+        return !!el.checked;
+      })
       .map(s=>s);
   };
-
   async function doPull_() {
     const selected = getSelectedScopes();
     const estateFilter = (role==='ADMIN') ? (document.getElementById('sync_estate')?.value || '').trim().toUpperCase() : '';

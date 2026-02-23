@@ -187,6 +187,7 @@ function doPost(e) {
     // ---- Lanjutkan logika Anda yang existing di bawah ini ----
     if (action === 'uploadLogo') {
       const sess = requireSession_(merged.token);
+      enforcePerm_(sess, action);
       const out = uploadLogo_(sess, merged);
       if (String(merged.format || '') === 'html') {
         const payload = JSON.stringify(out);
@@ -203,6 +204,7 @@ function doPost(e) {
 
     if (action === 'uploadCandidateDoc') {
       const sess = requireSession_(merged.token);
+      enforcePerm_(sess, action);
       const out = uploadCandidateDoc_(sess, merged);
       if (String(merged.format || '') === 'html') {
         const payload = JSON.stringify(out);
@@ -254,21 +256,26 @@ function login_(p) {
   audit_(nik, 'LOGIN', 'Users', u.user_id || '', { role: u.role });
 
   return {
-    ok: true,
-    token,
-    user: {
-      nik: nik,
-      name: u.name || nik,
-      role: u.role || 'ADMIN',
-      estate: (u.estate || '').trim(),
-      divisi: String(u.divisi || '').trim()
+  ok: true,
+  token,
+  user: {
+    nik: nik,
+    name: u.name || nik,
+    role: u.role || 'ADMIN',
+    estate: (u.estate || '').trim(),
+    divisi: String(u.divisi || '').trim(),
+    perms: {
+      actions: allowedActionsForRole_(u.role || 'ADMIN')
     }
-  };
+  }
+};
 }
 
 function me_(p) {
   const sess = requireSession_(p.token);
-  return { ok: true, user: sess.user };
+  const u = sess.user || {};
+  u.perms = { actions: allowedActionsForRole_(u.role || '') };
+  return { ok: true, user: u };
 }
 
 function requireSession_(token) {
@@ -307,13 +314,38 @@ function dashboard_(sess, p) {
   ensureColumns_('Candidates', ['program_id','estate','divisi']);
   ensureColumns_('Mentors', ['program_id','estate','divisi','updated_at']);
   const candidatesAll = sheetToObjects_('Candidates');
-  const candidates = candidatesAll.filter(x => !programId || String(x.program_id||'') === programId);
+  let candidates = candidatesAll.filter(x => !programId || String(x.program_id||'') === programId);
+
   const participantsAll = sheetToObjects_('Participants');
   let participants = participantsAll.filter(x => !programId || String(x.program_id||'') === programId);
-  let mentors = sheetToObjects_('Mentors').filter(x => !programId || String(x.program_id||'') === programId);
 
+  let mentors = sheetToObjects_('Mentors').filter(x => !programId || String(x.program_id||'') === programId);
+  // Enrich peserta: isi estate/divisi dari mentor (atau candidate) jika kosong
+  const mentorById = {};
+  mentors.forEach(m => mentorById[String(m.mentor_id||'')] = m);
+  const candById = {};
+  candidates.forEach(c => candById[String(c.candidate_id||'')] = c);
+
+  participants = participants.map(pp => {
+    const p2 = Object.assign({}, pp);
+    const e = String(p2.estate||'').trim();
+    const d = String(p2.divisi||'').trim();
+    if (!e || !d) {
+      const m = mentorById[String(p2.mentor_id||'')] || {};
+      const c = candById[String(p2.candidate_id||'')] || {};
+      if (!e) p2.estate = (m.estate || c.estate || '').toString();
+      if (!d) p2.divisi = (m.divisi || c.divisi || '').toString();
+    }
+    return p2;
+  });
+
+  // Non-admin (termasuk MANAGER) hanya boleh melihat data scope-nya
   if (!isAdmin_(sess)) {
-    participants = participants.filter(p => scopeMatchesEstateDivisi_(sess, p.estate, p.divisi));
+  // candidates & participants pakai RELAXED agar data dengan divisi kosong tidak hilang (khusus role yang wajib divisi)
+    candidates = candidates.filter(c => scopeMatchesEstateDivisiRelaxed_(sess, c.estate, c.divisi));
+    participants = participants.filter(p => scopeMatchesEstateDivisiRelaxed_(sess, p.estate, p.divisi));
+
+    // mentors tetap ketat (biasanya divisi mentor sudah jelas)
     mentors = mentors.filter(m => scopeMatchesEstateDivisi_(sess, m.estate, m.divisi));
   }
 
@@ -345,12 +377,13 @@ function dashboard_(sess, p) {
     days.push(key);
     counts.push(allLogs.filter(x => String(x.date||'') === key).length);
   }
+  const canSeeCandidates = inRoles_(sess, ['ADMIN','MANAGER']);
 
   return {
     ok: true,
     activeProgramId: programId,
     stats: {
-      candidates: isAdmin_(sess) ? candidates.length : 0,
+      candidates: canSeeCandidates ? candidates.length : 0,
       participants: participants.length,
       mentors: mentors.length,
       alerts: alertsCount
@@ -364,10 +397,10 @@ function dashboard_(sess, p) {
 
 
 function listPrograms_(sess){
-  const progs = sheetToObjects_('Programs');
+  const progsAll = sheetToObjects_('Programs');
   const myEstate = getEstateCodeFromSession_(sess);
   const myActiveId = getActiveProgramIdForEstate_(myEstate);
-  const myActive = myActiveId ? (progs.find(x => String(x.program_id||'') === myActiveId) || null) : null;
+  const myActive = myActiveId ? (progsAll.find(x => String(x.program_id||'') === myActiveId) || null) : null;
 
   // Build mapping active program per estate (based on MasterEstates)
   const estates = sheetToObjects_('MasterEstates').filter(x => String(x.active||'TRUE').toUpperCase()==='TRUE');
@@ -378,6 +411,36 @@ function listPrograms_(sess){
     const pid = getActiveProgramIdForEstate_(code);
     if (pid) activeByEstate[code] = pid;
   });
+
+  // Untuk non-admin: batasi daftar program.
+  // MANAGER: hanya program untuk estate-nya (berdasarkan Programs.location).
+  // Role lain: program yang pernah punya data (Candidates/Participants/Mentors) di estate user + program aktifnya.
+  let progs = progsAll;
+  if (isManager_(sess)) {
+    const est = String(myEstate||'').trim().toUpperCase();
+    progs = progsAll.filter(p => String(p.location||'').trim().toUpperCase() === est);
+  } else if (!isAdmin_(sess)) {
+    ensureColumns_('Candidates', ['program_id','estate','divisi']);
+    ensureColumns_('Participants', ['program_id','estate','divisi']);
+    ensureColumns_('Mentors', ['program_id','estate','divisi']);
+
+    const pidSet = new Set();
+    if (myActiveId) pidSet.add(String(myActiveId));
+
+    sheetToObjects_('Candidates')
+      .filter(x => String(x.estate||'').trim().toUpperCase() === String(myEstate||''))
+      .forEach(x => { if (x.program_id) pidSet.add(String(x.program_id)); });
+
+    sheetToObjects_('Participants')
+      .filter(x => String(x.estate||'').trim().toUpperCase() === String(myEstate||''))
+      .forEach(x => { if (x.program_id) pidSet.add(String(x.program_id)); });
+
+    sheetToObjects_('Mentors')
+      .filter(x => String(x.estate||'').trim().toUpperCase() === String(myEstate||''))
+      .forEach(x => { if (x.program_id) pidSet.add(String(x.program_id)); });
+
+    progs = progsAll.filter(p => pidSet.has(String(p.program_id||'')));
+  }
 
   // History = program CLOSED (untuk UI)
   const historyPrograms = progs.filter(p => String(p.status||'').toUpperCase()==='CLOSED');
@@ -391,26 +454,37 @@ function listPrograms_(sess){
     activeProgramsByEstate: activeByEstate,
     legacyGlobalActiveProgramId: getSetting_('activeProgramId') || '',
     historyPrograms,
-    estates: estates.map(e=>({ estate_code:String(e.estate_code||'').trim().toUpperCase(), estate_name:e.estate_name||'', manager_name:e.manager_name||'' }))
+    estates: estates.map(e=>({
+      estate_code:String(e.estate_code||'').trim().toUpperCase(),
+      estate_name:e.estate_name||'',
+      manager_name:e.manager_name||''
+    }))
   };
 }
 
 
 function createProgram_(sess, p) {
-  if (sess.user.role !== 'ADMIN') return { ok: false, error: 'Hanya ADMIN' };
+  if (!inRoles_(sess, ['ADMIN','MANAGER'])) return { ok: false, error: 'Hanya ADMIN/MANAGER' };
   const program_id = Utilities.getUuid();
+  const myEstate = getEstateCodeFromSession_(sess);
+  const isManager = isManager_(sess);
+
   const row = {
     program_id,
     name: (p.name||'').trim(),
     period_start: (p.period_start||'').trim(),
     period_end: (p.period_end||'').trim(),
-    location: (p.location||'').trim(),
+    // MANAGER: lokasi dipaksa sesuai Estate user (scope). ADMIN boleh isi bebas.
+    location: isManager ? String(myEstate||'').trim().toUpperCase() : (p.location||'').trim(),
     quota: (p.quota||'').trim(),
     status: 'DRAFT',
     created_by: sess.user.nik,
     created_at: nowIso_()
   };
+
   if (!row.name) return { ok:false, error:'Nama program wajib' };
+  if (isManager && !row.location) return { ok:false, error:'Estate user kosong. Isi kolom Estate pada sheet Users untuk role MANAGER.' };
+
   appendRow_('Programs', row);
   audit_(sess.user.nik, 'CREATE', 'Programs', program_id, row);
   return { ok:true, program_id };
@@ -418,13 +492,23 @@ function createProgram_(sess, p) {
 
 
 function setActiveProgram_(sess, p) {
-  if (!isAdmin_(sess)) return { ok: false, error: 'Hanya ADMIN' };
+  if (!inRoles_(sess, ['ADMIN','MANAGER'])) return { ok: false, error: 'Hanya ADMIN/MANAGER' };
 
   const program_id = String(p.program_id || '').trim();
   if (!program_id) return { ok:false, error:'program_id kosong' };
 
   const estate = resolveEstateCode_(sess, p);
   if (!estate) return { ok:false, error:'estate_code kosong. Pastikan user memiliki Estate atau kirim parameter estate_code (ADMIN).' };
+
+  // Guard: MANAGER hanya boleh mengaktifkan program yang lokasinya sama dengan estate-nya.
+  if (isManager_(sess)) {
+    const prog = findById_('Programs', 'program_id', program_id);
+    const loc = String((prog && prog.location) || '').trim().toUpperCase();
+    if (!prog) return { ok:false, error:'Program tidak ditemukan' };
+    if (loc && String(loc) !== String(estate)) {
+      return { ok:false, error:`MANAGER hanya boleh mengaktifkan program untuk estate ${estate}. Program ini lokasi: ${loc||'-'}` };
+    }
+  }
 
   // Simpan mapping active program per-estate
   setSetting_('activeProgramId:' + estate, program_id);
@@ -442,13 +526,22 @@ function setActiveProgram_(sess, p) {
  * Also clears activeProgramId:<ESTATE> mappings that currently point to this program.
  */
 function closeProgram_(sess, p) {
-  if (!isAdmin_(sess)) return { ok: false, error: 'Hanya ADMIN' };
+  if (!inRoles_(sess, ['ADMIN','MANAGER'])) return { ok: false, error: 'Hanya ADMIN/MANAGER' };
 
   const program_id = String(p.program_id || '').trim();
   if (!program_id) return { ok:false, error:'program_id kosong' };
 
   const prog = findById_('Programs', 'program_id', program_id);
   if (!prog) return { ok:false, error:'Program tidak ditemukan' };
+
+  // Guard: MANAGER hanya boleh menutup program untuk estate-nya.
+  if (isManager_(sess)) {
+    const myEstate = getEstateCodeFromSession_(sess);
+    const loc = String(prog.location||'').trim().toUpperCase();
+    if (loc && String(loc) !== String(myEstate)) {
+      return { ok:false, error:`MANAGER hanya boleh menutup program untuk estate ${myEstate}. Program ini lokasi: ${loc||'-'}` };
+    }
+  }
 
   const status = String(prog.status || '').toUpperCase();
   if (status === 'CLOSED') return { ok:true, program_id, status:'CLOSED' };
@@ -590,7 +683,7 @@ function listCandidates_(sess, p) {
 }
 
 function upsertCandidate_(sess, p) {
-  if (!inRoles_(sess, ['ADMIN'])) return { ok:false, error:'Hanya ADMIN' };
+  if (!inRoles_(sess, ['ADMIN','MANAGER','KTU'])) return { ok:false, error:'Hanya ADMIN/MANAGER/KTU' };
   const ctx = resolveProgramContext_(sess, p || {}, true);
   const programId = ctx.program_id;
 
@@ -699,23 +792,35 @@ function upsertCandidate_(sess, p) {
   }
 
   // update
-  const rowIndex = findRowIndexById_(values, idx, candId);
-  if (rowIndex < 2) return { ok:false, error:'Candidate not found' };
+ const rowIndex = findRowIndexById_(values, idx, candId);
+
+  // ✅ FIX: jika candidate_id belum ditemukan → anggap CREATE (bukan error)
+  if (rowIndex < 2) {
+    // default status saat create
+    if (rowObj.admin_status === undefined) rowObj.admin_status = 'SUBMITTED';
+    if (rowObj.admin_notes === undefined) rowObj.admin_notes = '';
+
+    appendRow_(sheetName, rowObj);
+    audit_(sess.user.nik, 'CREATE', 'Candidates', rowObj.candidate_id, rowObj);
+    return { ok:true, candidate_id: rowObj.candidate_id };
+  }
 
   const existing = rowToObject_(headers, values[rowIndex-1]);
   const updated = Object.assign({}, existing, rowObj);
+
   // ensure applied_at not overwritten
   updated.applied_at = existing.applied_at || updated.applied_at;
+
   // preserve admin_status/admin_notes when not provided
   if (rowObj.admin_status === undefined) updated.admin_status = existing.admin_status;
   if (rowObj.admin_notes === undefined) updated.admin_notes = existing.admin_notes;
-    // ✅ preserve dokumen ketika tidak dikirim dari form (agar tidak overwrite jadi kosong)
+
+  // ✅ preserve dokumen ketika tidak dikirim dari form (agar tidak overwrite jadi kosong)
   if (rowObj.docs_ktp === undefined) updated.docs_ktp = existing.docs_ktp;
   if (rowObj.docs_kk === undefined) updated.docs_kk = existing.docs_kk;
   if (rowObj.docs_skck === undefined) updated.docs_skck = existing.docs_skck;
   if (rowObj.docs_health === undefined) updated.docs_health = existing.docs_health;
   if (rowObj.photo_url === undefined) updated.photo_url = existing.photo_url;
-
 
   writeRowById_(sheetName, 'candidate_id', candId, updated);
   audit_(sess.user.nik, 'UPDATE', 'Candidates', candId, { nik: updated.nik, name: updated.name });
@@ -723,7 +828,7 @@ function upsertCandidate_(sess, p) {
 }
 
 function verifyCandidate_(sess, p) {
-  if (!inRoles_(sess, ['ADMIN'])) return { ok:false, error:'Hanya ADMIN' };
+  if (!inRoles_(sess, ['ADMIN','MANAGER','KTU'])) return { ok:false, error:'Hanya ADMIN/MANAGER/KTU' };
   const candidate_id = (p.candidate_id||'').trim();
   if (!candidate_id) return { ok:false, error:'candidate_id kosong' };
   const admin_status = (p.admin_status||'').trim();
@@ -841,7 +946,7 @@ function submitSelection_(sess, p) {
 
 // -------------------- Participants --------------------
 function generateParticipantsFromSelection_(sess, p) {
-  if (!inRoles_(sess, ['ADMIN'])) return { ok:false, error:'Hanya ADMIN' };
+  if (!inRoles_(sess, ['ADMIN','MANAGER','KTU'])) return { ok:false, error:'Hanya ADMIN/MANAGER/KTU' };
   const ctx = resolveProgramContext_(sess, p || {}, true);
   const programId = ctx.program_id;
   if (!programId) return { ok:false, error:'activeProgramId belum diset' };
@@ -1001,14 +1106,15 @@ function listParticipants_(sess, p) {
   mentors.forEach(m => mentorById[String(m.mentor_id||'')] = m);
 
   const candById = {};
-try {
-  ensureColumns_('Candidates', ['candidate_id','name']);
-  sheetToObjects_('Candidates').forEach(c => {
-    const cid = String(c.candidate_id||'');
-    if (!cid) return;
-    candById[cid] = c;
-  });
-} catch (e) {}
+  try {
+    // estate/divisi dipakai untuk scope bila peserta belum ada penempatan
+    ensureColumns_('Candidates', ['candidate_id','name','estate','divisi']);
+    sheetToObjects_('Candidates').forEach(c => {
+      const cid = String(c.candidate_id||'');
+      if (!cid) return;
+      candById[cid] = c;
+    });
+  } catch (e) {}
 
   const out = parts.map(p => {
     const nm = String(p.name||'').trim();
@@ -1019,6 +1125,8 @@ try {
     }
     const m = mentorById[String(p.mentor_id||'')] || {};
     p.mentor_name = m.name || '';
+    if (!String(p.estate||'').trim()) p.estate = String(m.estate|| (candById[String(p.candidate_id||'')]||{}).estate || '');
+    if (!String(p.divisi||'').trim()) p.divisi = String(m.divisi|| (candById[String(p.candidate_id||'')]||{}).divisi || '');
     return p;
   });
 
@@ -1036,7 +1144,7 @@ try {
 }
 
 function setPlacement_(sess, p) {
-  if (!inRoles_(sess, ['ADMIN','ASISTEN'])) return { ok:false, error:'Hanya ADMIN/ASISTEN' };
+  if (!inRoles_(sess, ['ADMIN','MANAGER','ASISTEN'])) return { ok:false, error:'Hanya ADMIN/MANAGER/ASISTEN' };
   const participant_id = (p.participant_id||'').trim();
   if (!participant_id) return { ok:false, error:'participant_id kosong' };
 
@@ -1118,12 +1226,13 @@ function listMentors_(sess, p) {
 }
 
 function upsertMentor_(sess, p) {
-  if (!inRoles_(sess, ['ADMIN','ASISTEN'])) return { ok:false, error:'Hanya ADMIN/ASISTEN' };
+  if (!inRoles_(sess, ['ADMIN','MANAGER','ASISTEN'])) return { ok:false, error:'Hanya ADMIN/MANAGER/ASISTEN' };
 
   const ctx = resolveProgramContext_(sess, p || {}, true);
   const programId = ctx.program_id;
 
   ensureColumns_('Mentors', ['program_id','estate','divisi','updated_at']);
+  ensureColumns_('Participants', ['mentor_id','candidate_id','estate','divisi']);
 
   const mentor_id = String(p.mentor_id||'').trim() || Utilities.getUuid();
   const exists = findById_('Mentors', 'mentor_id', mentor_id);
@@ -1155,7 +1264,7 @@ function upsertMentor_(sess, p) {
 }
 
 function assignMentor_(sess, p) {
-  if (!inRoles_(sess, ['ADMIN','ASISTEN'])) return { ok:false, error:'Hanya ADMIN/ASISTEN' };
+  if (!inRoles_(sess, ['ADMIN','MANAGER','ASISTEN'])) return { ok:false, error:'Hanya ADMIN/MANAGER/ASISTEN' };
 
   // context program UI (opsional, untuk validasi)
   const ctx = resolveProgramContext_(sess, p || {}, true);
@@ -1482,7 +1591,7 @@ function getDailyLogs_(sess, p) {
 
 // -------------------- Weekly Recap --------------------
 function computeWeeklyRecap_(sess, p) {
-  if (!inRoles_(sess, ['ADMIN','ASISTEN'])) return { ok:false, error:'Hanya ADMIN/ASISTEN' };
+  if (!inRoles_(sess, ['ADMIN','MANAGER','ASISTEN'])) return { ok:false, error:'Hanya ADMIN/MANAGER/ASISTEN' };
   const ctx = resolveProgramContext_(sess, p || {}, true);
   const programId = String(ctx.program_id||'').trim();
   if (!programId) return { ok:false, error:'Program belum dipilih' };
@@ -1738,7 +1847,7 @@ function listMonthlyRecaps_(sess, p){
 }
 
 function listFinalRecap_(sess, p){
-  if (!inRoles_(sess, ['ADMIN','ASISTEN'])) return { ok:false, error:'Hanya ADMIN/ASISTEN' };
+  if (!inRoles_(sess, ['ADMIN','MANAGER','ASISTEN'])) return { ok:false, error:'Hanya ADMIN/MANAGER/ASISTEN' };
   const ctx = resolveProgramContext_(sess, p || {}, true);
   const programId = String(ctx.program_id||'').trim();
   if (!programId) return { ok:false, error:'Program belum dipilih' };
@@ -1870,7 +1979,7 @@ function weekNoFromStart_(programId, weekStartDateObj) {
 
 // -------------------- Graduation --------------------
 function listGraduation_(sess, p) {
-  if (!inRoles_(sess, ['ADMIN','ASISTEN'])) return { ok:false, error:'Hanya ADMIN/ASISTEN' };
+  if (!inRoles_(sess, ['ADMIN','MANAGER','KTU','ASISTEN'])) return { ok:false, error:'Hanya ADMIN/MANAGER/KTU/ASISTEN' };
   const ctx = resolveProgramContext_(sess, p || {}, true);
   const activeProgramId = ctx.program_id;
 
@@ -1900,7 +2009,7 @@ function listGraduation_(sess, p) {
 }
 
 function graduateParticipant_(sess, p) {
-  if (!inRoles_(sess, ['ADMIN','ASISTEN'])) return { ok:false, error:'Hanya ADMIN/ASISTEN' };
+  if (!inRoles_(sess, ['ADMIN','MANAGER','KTU','ASISTEN'])) return { ok:false, error:'Hanya ADMIN/MANAGER/KTU/ASISTEN' };
   const ctx = resolveProgramContext_(sess, p || {}, true);
   const activeProgramId = ctx.program_id;
   if (!activeProgramId) return { ok:false, error:'activeProgramId belum diset' };
@@ -1956,7 +2065,7 @@ function ensureCertificatesColumns_() {
 }
 
 function issueCertificate_(sess, p) {
-  if (!inRoles_(sess, ['ADMIN'])) return { ok:false, error:'Hanya ADMIN' };
+  if (!inRoles_(sess, ['ADMIN','MANAGER','KTU'])) return { ok:false, error:'Hanya ADMIN/MANAGER/KTU' };
   ensureCertificatesColumns_();
   const ctx = resolveProgramContext_(sess, p || {}, true);
   const activeProgramId = ctx.program_id;
@@ -2044,7 +2153,19 @@ function listCertificates_(sess, p) {
 
     const role = String(sess.user.role || '').trim().toUpperCase();
 
-    if (role === 'MENTOR') {
+    if (role === 'PESERTA') {
+      // Peserta hanya boleh melihat sertifikat dirinya sendiri
+      const myNik = String(sess.user.nik || '').trim();
+      const myPart = parts.find(x => String(x.nik||'').trim() === myNik);
+      const myParticipantId = myPart ? String(myPart.participant_id||'') : '';
+      items = items.filter(c => {
+        const pt = String(c.person_type || '').toUpperCase();
+        const pid = String(c.person_id || '');
+        return pt === 'PESERTA' && myParticipantId && pid === myParticipantId;
+      });
+
+    } else if (role === 'MENTOR') {
+
       const my = myMentees_(sess, p);
       const allowed = new Set(
         (my && my.ok && Array.isArray(my.items) ? my.items : [])
@@ -2096,7 +2217,7 @@ function nextCertificateNo_() {
 // -------------------- Incentives --------------------
 function listMentorIncentives_(sess, p) {
   p = p || {};
-  if (!inRoles_(sess, ['ADMIN','ASISTEN'])) return { ok:false, error:'Hanya ADMIN/ASISTEN' };
+  if (!inRoles_(sess, ['ADMIN','MANAGER','KTU'])) return { ok:false, error:'Hanya ADMIN/MANAGER/KTU' };
 
   const ctx = resolveProgramContext_(sess, p, true);
   const activeProgramId = ctx.program_id;
@@ -2148,7 +2269,7 @@ function listMentorIncentives_(sess, p) {
 
 function verifyIncentive_(sess, p) {
   ensureMentorIncentivesColumns_();
-  if (!inRoles_(sess, ['ADMIN','ASISTEN'])) return { ok:false, error:'Hanya ADMIN/ASISTEN' };
+  if (!inRoles_(sess, ['ADMIN','MANAGER','KTU'])) return { ok:false, error:'Hanya ADMIN/MANAGER/KTU' };
   const incentive_id = (p.incentive_id||'').trim();
   const status = (p.status||'').trim() || 'VERIFIED';
   if (!incentive_id) return { ok:false, error:'incentive_id kosong' };
@@ -2250,6 +2371,118 @@ function inRoles_(sess, roles) {
   return norm.indexOf(r) >= 0;
 }
 
+// RBAC allow-list map (shared)
+function rbacAllowMap_() {
+  return {
+    // Semua role yang sudah login
+    dashboard: ['ADMIN','MANAGER'],
+    dashboardDetail: ['ADMIN','MANAGER'],
+    listPrograms: ['ADMIN','MANAGER','KTU','ASISTEN','MANDOR','MENTOR','PESERTA'],
+
+    // Program (ADMIN & MANAGER)
+    createProgram: ['ADMIN','MANAGER'],
+    setActiveProgram: ['ADMIN','MANAGER'],
+    closeProgram: ['ADMIN','MANAGER'],
+    dashboardAllPrograms: ['ADMIN'],
+
+    // Calon & Seleksi
+    listCandidates: ['ADMIN','MANAGER','KTU'],
+    upsertCandidate: ['ADMIN','MANAGER','KTU'],
+    verifyCandidate: ['ADMIN','MANAGER','KTU'],
+    listSelection: ['ADMIN','MANAGER','KTU'],
+    submitSelection: ['ADMIN','MANAGER','KTU'],
+
+    // Peserta
+    generateParticipantsFromSelection: ['ADMIN','MANAGER','KTU'],
+    listParticipants: ['ADMIN','MANAGER','KTU','ASISTEN','MANDOR'],
+    setPlacement: ['ADMIN','MANAGER','KTU','ASISTEN'],
+
+    // Mentor & pairing
+    listMentors: ['ADMIN','MANAGER','ASISTEN','MANDOR'],
+    upsertMentor: ['ADMIN','MANAGER','ASISTEN'],
+    assignMentor: ['ADMIN','MANAGER','ASISTEN','MANDOR'],
+    myMentees: ['ADMIN','MANAGER','ASISTEN','MANDOR','MENTOR'],
+    getParticipantMentor: ['ADMIN','MANAGER','ASISTEN','MANDOR','MENTOR'],
+    lookupParticipants: ['ADMIN','MANAGER','KTU','ASISTEN','MANDOR','MENTOR'],
+    lookupMentors: ['ADMIN','MANAGER','KTU','ASISTEN','MANDOR'],
+
+    // Monitoring / Log harian
+    getDailyLogs: ['ADMIN','MANAGER','KTU','ASISTEN','MANDOR','MENTOR'],
+    submitDailyLog: ['ADMIN','MENTOR'],
+    computeWeeklyRecap: ['ADMIN','MANAGER','KTU'],
+    listWeeklyRecaps: ['ADMIN','MANAGER','KTU'],
+    listMonthlyRecaps: ['ADMIN','MANAGER','KTU'],
+    listFinalRecap: ['ADMIN','MANAGER','KTU'],
+
+    // Kelulusan & Sertifikat
+    listGraduation: ['ADMIN','MANAGER','KTU'],
+    graduateParticipant: ['ADMIN','MANAGER','KTU'],
+    issueCertificate: ['ADMIN','MANAGER','KTU'],
+    regenerateCertificatePdf: ['ADMIN'],
+    listCertificates: ['ADMIN','MANAGER','KTU','ASISTEN','MENTOR','PESERTA'],
+
+    // Insentif
+    listMentorIncentives: ['ADMIN','MANAGER','KTU'],
+    verifyIncentive: ['ADMIN','MANAGER','KTU'],
+
+    // Pengaturan
+    changeMyPin: ['ADMIN','MANAGER','KTU','ASISTEN','MANDOR','MENTOR','PESERTA'],
+    getSettings: ['ADMIN'],
+    setSettings: ['ADMIN'],
+    listUsers: ['ADMIN'],
+    upsertUser: ['ADMIN'],
+    deleteUser: ['ADMIN'],
+    resetUserPin: ['ADMIN'],
+    listMasterEstates: ['ADMIN'],
+    upsertMasterEstate: ['ADMIN'],
+    deleteMasterEstate: ['ADMIN'],
+    checkDriveAccess: ['ADMIN'],
+
+    // Upload (POST)
+    uploadLogo: ['ADMIN'],
+    uploadCandidateDoc: ['ADMIN','MANAGER','KTU'],
+  };
+}
+
+function allowedActionsForRole_(roleNorm) {
+  const allow = rbacAllowMap_();
+  const r = roleNorm_(roleNorm);
+  const out = [];
+  Object.keys(allow).forEach(a => {
+    if ((allow[a] || []).indexOf(r) >= 0) out.push(String(a || '').trim());
+  });
+  // unique + sort biar stabil
+  const uniq = {};
+  out.forEach(x => { if (x) uniq[x] = true; });
+  return Object.keys(uniq).sort();
+}
+
+// -------------------- RBAC (Role-Based Access Control) --------------------
+// Mengunci akses action berdasarkan role. Filtering data estate/divisi tetap dilakukan
+// oleh fungsi-fungsi list_* yang sudah ada.
+function roleNorm_(role) {
+  const r = String(role || '').trim().toUpperCase();
+  if (r === 'ADMINISTRATOR') return 'ADMIN';
+  return r;
+}
+
+function enforcePerm_(sess, action) {
+  const r = roleNorm_(sess && sess.user && sess.user.role);
+  const a = String(action || '').trim();
+
+  // Endpoint publik / tanpa login (ditangani sebelum requireSession_)
+  if (a === 'ping' || a === 'verifyCert' || a === 'login' || a === 'me') return;
+
+  const allow = rbacAllowMap_();
+  const allowed = allow[a];
+  if (!allowed) {
+    // Default aman: endpoint baru hanya ADMIN
+    if (r !== 'ADMIN') throw new Error('Akses ditolak (role tidak diizinkan): ' + r);
+    return;
+  }
+  if (allowed.indexOf(r) < 0) throw new Error('Akses ditolak untuk role ' + r + ' pada action ' + a);
+}
+
 function getUserEstate_(sess){ return String(sess && sess.user && sess.user.estate ? sess.user.estate : '').trim().toUpperCase(); }
 function getUserDivisi_(sess){
   const u = (sess && sess.user) ? sess.user : {};
@@ -2257,13 +2490,49 @@ function getUserDivisi_(sess){
 }
 
 function scopeMatchesEstateDivisi_(sess, estate, divisi){
+  const role = roleNorm_(sess && sess.user && sess.user.role);
   const uEstate = getUserEstate_(sess);
   const uDiv = getUserDivisi_(sess);
+
   const e = String(estate||'').trim().toUpperCase();
   const d = String(divisi||'').trim();
+
   if (!uEstate) return false;
-  if (e && e !== uEstate) return false;
-  if (uDiv && d && d !== uDiv) return false;
+
+  // Estate wajib sama untuk semua non-admin
+  if (e !== uEstate) return false;
+
+  // Untuk role yang memang dibatasi divisi
+  if (['ASISTEN','MANDOR','MENTOR'].indexOf(role) >= 0) {
+    if (!uDiv) return false;       // kalau user harus punya divisi tapi kosong → tolak
+    if (d !== uDiv) return false;  // divisi wajib sama
+  }
+
+  return true;
+}
+
+function scopeMatchesEstateDivisiRelaxed_(sess, estate, divisi){
+  const role = roleNorm_(sess && sess.user && sess.user.role);
+  const uEstate = getUserEstate_(sess);
+  const uDiv = getUserDivisi_(sess);
+
+  const e = String(estate||'').trim().toUpperCase();
+  const d = String(divisi||'').trim();
+
+  if (!uEstate) return false;
+  if (e !== uEstate) return false;
+
+  // Role yang dibatasi divisi: divisi user wajib ada
+  if (['ASISTEN','MANDOR','MENTOR'].indexOf(role) >= 0) {
+    if (!uDiv) return false;
+
+    // Kalau divisi pada DATA masih kosong, jangan dibuang dulu (supaya tidak "hilang" di dashboard).
+    if (!d) return true;
+
+    // Kalau ada divisi di data, wajib match
+    if (d !== uDiv) return false;
+  }
+
   return true;
 }
 
@@ -2503,6 +2772,12 @@ function isAdmin_(sess) {
   return role === 'ADMIN' || role === 'ADMINISTRATOR';
 }
 
+function isManager_(sess) {
+  const role = String(sess && sess.user && sess.user.role || '').toUpperCase();
+  return role === 'MANAGER';
+}
+
+
 function getEstateCodeFromSession_(sess) {
   return String(sess && sess.user && sess.user.estate || '').trim().toUpperCase();
 }
@@ -2533,11 +2808,36 @@ function resolveProgramContext_(sess, p, allowProgramOverride) {
     }
   }
 
-  // Non-admin (atau admin tanpa override): fallback ke program aktif per-estate user
+  // Non-admin: jika caller mengirim program_id, izinkan selama program itu memang milik estate user.
+  if (allowProgramOverride && requestedProgramId && !isAdmin_(sess)) {
+    const estateUser = resolveEstateCode_(sess, p); // untuk non-admin, ini akan jadi estate user
+    const ok = programBelongsToEstate_(requestedProgramId, estateUser);
+    if (!ok) throw new Error('Akses ditolak: program bukan milik estate ' + (estateUser || '(kosong)'));
+    return { program_id: requestedProgramId, estate_code: estateUser };
+  }
+
+  // Fallback ke program aktif per-estate user
   const estate = resolveEstateCode_(sess, p);
   const pid = getActiveProgramIdForEstate_(estate);
-  if (!pid) throw new Error('activeProgramId belum diset untuk Estate ' + (estate || '(kosong)'));
+  if (!pid) {
+    if (allowProgramOverride) {
+      // Tanpa filter program (tetap akan discope by estate/divisi)
+      return { program_id: '', estate_code: estate, no_active_program: true };
+    }
+    throw new Error('activeProgramId belum diset untuk Estate ' + (estate || '(kosong)'));
+  }
   return { program_id: pid, estate_code: estate };
+}
+
+function programBelongsToEstate_(program_id, estate_code){
+  const pid = String(program_id||'').trim();
+  const est = String(estate_code||'').trim().toUpperCase();
+  if (!pid || !est) return false;
+  const progs = sheetToObjects_('Programs');
+  const pr = progs.find(x => String(x.program_id||'') === pid);
+  if (!pr) return false;
+  const loc = String(pr.location||'').trim().toUpperCase();
+  return loc === est;
 }
 function getSheet_(sheetKey) {
   const ss = SpreadsheetApp.openById(CONFIG.SPREADSHEET_ID);
@@ -3508,7 +3808,7 @@ function uploadLogo_(sess, p) {
  *  - filename, mimeType, base64 (wajib)
  */
 function uploadCandidateDoc_(sess, p) {
-  if (!inRoles_(sess, ['ADMIN'])) return { ok:false, error:'Hanya ADMIN' };
+  if (!inRoles_(sess, ['ADMIN','MANAGER','KTU'])) return { ok:false, error:'Hanya ADMIN/MANAGER/KTU' };
 
   const candidate_id = String(p.candidate_id||'').trim();
   const field = String(p.field||'').trim();
@@ -3577,34 +3877,99 @@ function dashboardDetail_(sess, p) {
   const type = String(p.type||'').trim();
   const ctx = resolveProgramContext_(sess, p || {}, true);
   const activeProgramId = ctx.program_id;
+
   const requestedProgramId = String((p && p.program_id) ? p.program_id : '').trim();
   const programId = requestedProgramId || activeProgramId;
+
   if (!type) return { ok:false, error:'type wajib' };
 
+  // prepare mentor map (untuk enrich mentor_name)
+  const mentorsAll = sheetToObjects_('Mentors')
+    .filter(x => !programId || String(x.program_id||'') === programId);
+  const mentorsVisible = isAdmin_(sess) ? mentorsAll : mentorsAll.filter(m => scopeMatchesEstateDivisi_(sess, m.estate, m.divisi));
+  const mentorById = {};
+  mentorsVisible.forEach(m => mentorById[String(m.mentor_id||'')] = m);
+
   if (type === 'candidates') {
-    if (!isAdmin_(sess)) return { ok:true, items: [] };
-    const rows = sheetToObjects_('Candidates').slice(-200).reverse();
+    // ADMIN melihat semua, MANAGER/KTU melihat scope estate sendiri
+    if (!inRoles_(sess, ['ADMIN','MANAGER','KTU'])) return { ok:true, items: [] };
+
+    const rowsAll = sheetToObjects_('Candidates')
+      .filter(x => !programId || String(x.program_id||'') === programId)
+      .slice(-300).reverse();
+
+    const rows = isAdmin_(sess)
+      ? rowsAll
+      : rowsAll.filter(x => scopeMatchesEstateDivisi_(sess, x.estate, x.divisi));
+
     return { ok:true, items: rows };
   }
 
   if (type === 'participants') {
-    const rowsAll = sheetToObjects_('Participants')
-      .filter(x => !programId || String(x.program_id||'')===programId)
-      .slice(-300).reverse();
-    const rows = isAdmin_(sess) ? rowsAll : rowsAll.filter(x => scopeMatchesEstateDivisi_(sess, x.estate, x.divisi));
-    return { ok:true, items: rows };
-  }
+    const catFilter = String(p.category||'').trim(); // dari klik donut
 
-  if (type === 'mentors') {
-    const rowsAll = sheetToObjects_('Mentors').slice(-300).reverse();
-    const rows = isAdmin_(sess) ? rowsAll : rowsAll.filter(x => scopeMatchesEstateDivisi_(sess, x.estate, x.divisi));
+    // Ambil kandidat untuk fallback estate/divisi (karena peserta sering belum terisi estate/divisi)
+    const candidatesAll = sheetToObjects_('Candidates')
+      .filter(x => !programId || String(x.program_id||'') === programId);
+    const candById = {};
+    candidatesAll.forEach(c => { candById[String(c.candidate_id||'')] = c; });
+
+    // Map mentor ALL (bukan hanya visible) untuk mengisi estate/divisi peserta sebelum scope filtering
+    // Aman karena setelah di-enrich tetap akan di-filter scope user
+    const mentorAllById = {};
+    mentorsAll.forEach(m => { mentorAllById[String(m.mentor_id||'')] = m; });
+
+    // Load participants (lebih aman jangan slice dulu sebelum filter kategori/scope)
+    let rowsAll = sheetToObjects_('Participants')
+      .filter(x => !programId || String(x.program_id||'') === programId)
+      .reverse();
+
+    // 1) ENRICH estate/divisi dari mentor / candidate jika kosong
+    rowsAll = rowsAll.map(pp => {
+      const r = Object.assign({}, pp);
+      const e = String(r.estate||'').trim();
+      const d = String(r.divisi||'').trim();
+      if (!e || !d) {
+        const m = mentorAllById[String(r.mentor_id||'')] || {};
+        const c = candById[String(r.candidate_id||'')] || {};
+        if (!e) r.estate = (m.estate || c.estate || '').toString();
+        if (!d) r.divisi = (m.divisi || c.divisi || '').toString();
+      }
+      return r;
+    });
+
+    // 2) Filter kategori (kalau dari klik donut)
+    if (catFilter) {
+      const catU = catFilter.toUpperCase();
+      rowsAll = rowsAll.filter(x => String(x.category||'').trim().toUpperCase() === catU);
+    }
+
+    // 3) Scope filter (Non-admin termasuk MANAGER)
+    let rows = isAdmin_(sess)
+      ? rowsAll
+      : rowsAll.filter(x => scopeMatchesEstateDivisiRelaxed_(sess, x.estate, x.divisi));
+
+    // 4) Batasi output terakhir (setelah semua filter)
+    rows = rows.slice(0, 300);
+
+    // 5) enrich mentor_name supaya frontend aman walau tidak preload
+    rows = rows.map(r => {
+      const rr = Object.assign({}, r);
+      const mid = String(rr.mentor_id||'').trim();
+      // mentorById = mentorsVisible (sudah scope), jadi tidak bocor lintas estate
+      rr.mentor_name = (mentorById[mid] && mentorById[mid].name)
+        ? mentorById[mid].name
+        : (rr.mentor_name || '');
+      return rr;
+    });
+
     return { ok:true, items: rows };
   }
 
   if (type === 'alerts') {
     const today = Utilities.formatDate(new Date(), Session.getScriptTimeZone(), 'yyyy-MM-dd');
     const partsAll = sheetToObjects_('Participants').filter(x => !programId || String(x.program_id||'')===programId);
-    const parts = isAdmin_(sess) ? partsAll : partsAll.filter(x => scopeMatchesEstateDivisi_(sess, x.estate, x.divisi));
+    const parts = isAdmin_(sess) ? partsAll : partsAll.filter(x => scopeMatchesEstateDivisiRelaxed_(sess, x.estate, x.divisi));
 
     const logsTodayAll = sheetToObjects_('DailyLogs')
       .filter(x => String(x.date||'')===today)
@@ -3614,15 +3979,38 @@ function dashboardDetail_(sess, p) {
     const logsToday = isAdmin_(sess) ? logsTodayAll : logsTodayAll.filter(l => visibleIds.has(String(l.participant_id||'')));
     const logged = new Set(logsToday.map(x => String(x.participant_id||'')));
 
-    const miss = parts.filter(p => !logged.has(String(p.participant_id||''))).map(x=>({
-      participant_id: x.participant_id,
-      nik: x.nik||'',
-      name: x.name||'',
-      category: x.category||'',
-      estate: x.estate||'',
-      divisi: x.divisi||''
-    }));
+    // sebelumnya UI Anda hanya tampil NIK/Nama/Kategori,
+    // padahal backend sudah kirim estate/divisi -> sekarang tambah mentor_id + mentor_name juga
+    const miss = parts
+      .filter(p => !logged.has(String(p.participant_id||'')))
+      .map(x=>{
+        const mid = String(x.mentor_id||'').trim();
+        const mn = (mentorById[mid] && mentorById[mid].name) ? mentorById[mid].name : '';
+        return {
+          participant_id: x.participant_id,
+          nik: x.nik||'',
+          name: x.name||'',
+          category: x.category||'',
+          estate: x.estate||'',
+          divisi: x.divisi||'',
+          mentor_id: mid,
+          mentor_name: mn
+        };
+      });
+
     return { ok:true, items: miss };
+  }
+
+    if (type === 'mentors') {
+    const rowsAll = sheetToObjects_('Mentors')
+      .filter(x => !programId || String(x.program_id||'') === programId)
+      .slice(-300).reverse();
+
+    const rows = isAdmin_(sess)
+      ? rowsAll
+      : rowsAll.filter(x => scopeMatchesEstateDivisi_(sess, x.estate, x.divisi)); // mentor tetap ketat
+
+    return { ok:true, items: rows };
   }
 
   return { ok:false, error:'type tidak dikenal' };
@@ -3630,7 +4018,7 @@ function dashboardDetail_(sess, p) {
 
 // -------------------- Certificate regenerate --------------------
 function regenerateCertificatePdf_(sess, p) {
-  if (!inRoles_(sess, ['ADMIN'])) return { ok:false, error:'Hanya ADMIN' };
+  if (!inRoles_(sess, ['ADMIN','MANAGER','KTU'])) return { ok:false, error:'Hanya ADMIN/MANAGER/KTU' };
   ensureCertificatesColumns_();
   const cert_id = String(p.cert_id||'').trim();
   if (!cert_id) return { ok:false, error:'cert_id wajib' };
@@ -3654,7 +4042,7 @@ function regenerateCertificatePdf_(sess, p) {
 }
 
 function checkDriveAccess_(sess, p) {
-  if (!inRoles_(sess, ['ADMIN'])) return { ok:false, error:'Hanya ADMIN' };
+  if (!inRoles_(sess, ['ADMIN','MANAGER','KTU'])) return { ok:false, error:'Hanya ADMIN/MANAGER/KTU' };
 
   // Bisa override via query param kalau perlu (optional)
   const certId = String(p.certFolderId || CONFIG.CERT_FOLDER_ID || '').trim();

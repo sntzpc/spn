@@ -23,18 +23,55 @@ export function btnBusy(btn, busy=true, labelBusy='Memproses...') {
   if (lb && labelBusy) lb.textContent = busy ? labelBusy : (lb.dataset.orig || lb.textContent);
 }
 
-export function h(tag, attrs={}, children=[]) {
+export function h(tag, attrs = {}, children = []) {
   const el = document.createElement(tag);
-  Object.entries(attrs||{}).forEach(([k,v])=>{
-    if (k==='class') el.className = v;
-    else if (k.startsWith('on') && typeof v === 'function') el.addEventListener(k.slice(2).toLowerCase(), v);
-    else if (v !== undefined && v !== null) el.setAttribute(k, String(v));
+
+  const BOOL_ATTRS = new Set([
+    'disabled', 'checked', 'selected', 'readonly', 'multiple',
+    'required', 'hidden', 'open'
+  ]);
+
+  Object.entries(attrs || {}).forEach(([k, v]) => {
+    if (k === 'class') {
+      el.className = v || '';
+      return;
+    }
+
+    if (k.startsWith('on') && typeof v === 'function') {
+      el.addEventListener(k.slice(2).toLowerCase(), v);
+      return;
+    }
+
+    // handle boolean attributes properly (IMPORTANT!)
+    if (BOOL_ATTRS.has(k)) {
+      el[k] = !!v;                 // set property
+      if (!!v) el.setAttribute(k, ''); // reflect attribute only when true
+      else el.removeAttribute(k);
+      return;
+    }
+
+    // common properties that should be set as properties (not attributes)
+    if (k === 'value') {
+      el.value = (v ?? '');
+      return;
+    }
+    if (k === 'id') {
+      el.id = String(v ?? '');
+      return;
+    }
+
+    // ignore false/null/undefined so it won't create "attr=false"
+    if (v === false || v === undefined || v === null) return;
+
+    el.setAttribute(k, String(v));
   });
-  (Array.isArray(children)?children:[children]).forEach(ch=>{
+
+  (Array.isArray(children) ? children : [children]).forEach(ch => {
     if (ch === null || ch === undefined) return;
     if (typeof ch === 'string') el.appendChild(document.createTextNode(ch));
     else el.appendChild(ch);
   });
+
   return el;
 }
 
