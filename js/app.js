@@ -2573,18 +2573,55 @@ async function openDailyLogModal() {
         h('option',{value:''},'-- Auto / Pilih Mentor --')
       ])
     ]),
-    field2('Attendance','dl_att','HADIR'),
-    field2('Tonnage (ton/HK)','dl_ton','1.0'),
-    field2('Mutu/Grading','dl_mutu',''),
-    field2('Losses/Brondolan','dl_loss',''),
+    
+    // Kehadiran (kode) - pilihan saja
     h('div',{},[
-      h('label',{class:'text-sm text-slate-600 dark:text-slate-300'},'APD OK'),
-      h('select',{id:'dl_apd', class:'mt-1 w-full rounded-2xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 px-3 py-3 text-sm'},[
-        h('option',{value:'TRUE'},'TRUE'),
-        h('option',{value:'FALSE'},'FALSE'),
+      h('label',{class:'text-sm text-slate-600 dark:text-slate-300'},'Kehadiran (Kode)'),
+      h('select',{id:'dl_att', class:'mt-1 w-full rounded-2xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 px-3 py-3 text-sm'},[
+        h('option',{value:'K'},'K — Kerja (upah dibayar)'),
+        h('option',{value:'S1'},'S1 — Sakit rawat jalan (upah dibayar)'),
+        h('option',{value:'S2'},'S2 — Sakit rawat inap (upah dibayar)'),
+        h('option',{value:'C'},'C — Cuti (upah dibayar)'),
+        h('option',{value:'P3'},'P3 — Ijin urusan sosial (upah dibayar)'),
+        h('option',{value:'P4'},'P4 — Ijin urusan negara (upah dibayar)'),
+        h('option',{value:'H1'},'H1 — Haid (upah dibayar)'),
+        h('option',{value:'H2'},'H2 — Melahirkan (upah dibayar)'),
+        h('option',{value:'P1'},'P1 — Ijin pribadi (upah TIDAK dibayar)'),
+        h('option',{value:'M'},'M — Mangkir / tanpa izin (upah TIDAK dibayar)'),
       ])
     ]),
+    field2('Tonnage (ton/HK)','dl_ton','1.0'),
+
+    // APD checklist (default semua tercentang)
+    h('div',{class:'md:col-span-2'},[
+      h('label',{class:'text-sm text-slate-600 dark:text-slate-300'},'APD (Checklist)'),
+      h('div',{class:'mt-2 grid sm:grid-cols-2 gap-2'},[
+        checkApd_('apd_helm','Helm', true),
+        checkApd_('apd_boot','Sepatu boot', true),
+        checkApd_('apd_gloves','Sarung tangan', true),
+        checkApd_('apd_sleeve','Sarung egrek/dodos', true),
+      ]),
+      h('div',{class:'text-xs text-slate-500 dark:text-slate-400 mt-1'},'Default: semua APD dicentang. Hilangkan centang untuk APD yang tidak digunakan.')
+    ]),
+
+    // Losses IPD
+    fieldNum_('Losses (IPD)','dl_ipd','0.25', {step:'0.01'}),
+
+    // Kualitas TBS (input satu-satu)
+    h('div',{class:'md:col-span-2'},[
+      h('label',{class:'text-sm text-slate-600 dark:text-slate-300'},'Kualitas TBS (isi % aktual)'),
+      h('div',{class:'mt-2 grid md:grid-cols-5 gap-2'},[
+        fieldMiniNum_('BM','q_bm','0'),
+        fieldMiniNum_('BKM','q_bkm','0'),
+        fieldMiniNum_('BMM','q_bmm','85'),
+        fieldMiniNum_('BTM','q_btm','0'),
+        fieldMiniNum_('JJK','q_jjk','0'),
+      ]),
+      h('div',{class:'text-xs text-slate-500 dark:text-slate-400 mt-1'},'Standar: BM=0%; BKM<5%; BMM>85%; BTM<5%; JJK<1%')
+    ]),
+
     field2('Disiplin (0-100)','dl_dis','80'),
+
     h('div',{class:'md:col-span-2'},[
       h('label',{class:'text-sm text-slate-600 dark:text-slate-300'},'Catatan'),
       h('textarea',{id:'dl_note', rows:'2', class:'mt-1 w-full rounded-2xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 px-3 py-3 text-sm'}, '')
@@ -2634,11 +2671,27 @@ async function openDailyLogModal() {
         participant_id: v('dl_participant'),
         mentor_id: v('dl_mentor'),
         date: dateIso, // ✅ pastikan ISO dari awal
-        attendance: v('dl_att'),
+        attendance: v('dl_att'), // kode: K/S1/S2/C/P3/P4/H1/H2/P1/M
         tonnage: v('dl_ton'),
-        mutu_grade: v('dl_mutu'),
-        losses_brondolan: v('dl_loss'),
-        apd_ok: v('dl_apd'),
+
+        // APD per item
+        apd_helm: cb_('apd_helm'),
+        apd_boot: cb_('apd_boot'),
+        apd_gloves: cb_('apd_gloves'),
+        apd_sleeve: cb_('apd_sleeve'),
+        // legacy apd_ok (TRUE jika semua APD dipakai)
+        apd_ok: (cb_('apd_helm') && cb_('apd_boot') && cb_('apd_gloves') && cb_('apd_sleeve')) ? 'TRUE' : 'FALSE',
+
+        // Losses langsung input IPD
+        losses_ipd: v('dl_ipd'),
+
+        // Kualitas TBS (%)
+        q_bm: v('q_bm'),
+        q_bkm: v('q_bkm'),
+        q_bmm: v('q_bmm'),
+        q_btm: v('q_btm'),
+        q_jjk: v('q_jjk'),
+
         discipline_score: v('dl_dis'),
         note: (document.getElementById('dl_note').value||'').trim()
       };
@@ -2675,6 +2728,28 @@ async function openDailyLogModal() {
     finally{ btnBusy(btn,false,'Simpan'); }
   };
 
+  
+  function checkApd_(id, label, checked){
+    return h('label',{class:'flex items-center gap-2 p-3 rounded-2xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 text-sm'},[
+      h('input',{id, type:'checkbox', class:'w-4 h-4', checked: !!checked}),
+      h('span',{}, label)
+    ]);
+  }
+  function fieldNum_(label,id,ph, extraAttr){
+    const attrs = {id, type:'number', placeholder:ph||'', class:'mt-1 w-full rounded-2xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 px-3 py-3 text-sm'};
+    // allow raw extra html attributes via dataset is not possible, so keep step default and set below
+    return h('div',{},[
+      h('label',{class:'text-sm text-slate-600 dark:text-slate-300'},label),
+      h('input', Object.assign(attrs, (extraAttr||{})))
+    ]);
+  }
+  function fieldMiniNum_(label,id,ph){
+    return h('div',{},[
+      h('div',{class:'text-xs font-semibold text-slate-600 dark:text-slate-300'},label),
+      h('input',{id, type:'number', step:'0.1', placeholder:ph||'', class:'mt-1 w-full rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 px-2 py-2 text-sm'})
+    ]);
+  }
+
   function field2(label,id,ph){
     return h('div',{},[
       h('label',{class:'text-sm text-slate-600 dark:text-slate-300'},label),
@@ -2682,6 +2757,7 @@ async function openDailyLogModal() {
     ]);
   }
   function v(id){ return (document.getElementById(id).value||'').trim(); }
+  function cb_(id){ return !!(document.getElementById(id) && document.getElementById(id).checked); }
 }
 
 
@@ -2775,20 +2851,29 @@ async function renderGraduation() {
         h('div',{class:'font-semibold'},'Rekap Akhir Program'),
         h('div',{class:'text-xs text-slate-500 dark:text-slate-400'}, rangeText||'')
       ]),
-      table(['SRC','Peserta','Total Log','Avg Ton','Avg Mutu','Losses','Hadir%','APD%','Disiplin','Rekom','Keputusan','Aksi'],
+      table(['SRC','Peserta','Total Log','Avg Ton','% Basis','Avg Mutu','Losses','Hadir%','APD%','Disiplin','Skor Prod','Skor Hadir','Skor APD','Skor Loss','Skor Mutu','Nilai Akhir','Min Lulus','Rekom','Keputusan','Aksi'],
         items.map(x=>[
           srcBadge_(rowSrc_(x), !!x.__local_pending),
           `${x.participant_name||''} (${x.participant_nik||''})`,
           x.total_logs||'0',
           x.avg_tonnage||'-',
+          x.productivity_pct||'-',
           x.avg_mutu||'-',
           x.losses_rate||'-',
           x.attendance_pct||'0',
           x.apd_pct||'0',
           x.discipline_avg||'-',
+          x.score_productivity||'-',
+          x.score_attendance||'-',
+          x.score_apd||'-',
+          x.score_losses||'-',
+          x.score_quality||'-',
+          badge(x.final_score||'-'),
+          x.pass_min||'-',
           badge(x.recommended||'-'),
           badge(x.decision||'-'),
-          h('button',{class:'rounded-xl px-3 py-2 text-xs bg-emerald-600 text-white', onclick:()=>openGradModal({
+
+h('button',{class:'rounded-xl px-3 py-2 text-xs bg-emerald-600 text-white', onclick:()=>openGradModal({
             participant_id: x.participant_id,
             nik: x.participant_nik,
             name: x.participant_name,
@@ -3310,8 +3395,414 @@ async function renderSettings(){
     });
   }
 
+  // ======================
+  // Skoring & Bobot Nilai (Admin)
+  // ======================
+  function defaultScoringRulesFront_(){
+    return {
+      basisTonnage: 1,
+      passMin: 3.5,
+      weights: { productivity:0.4, attendance:0.3, apd:0.1, losses:0.1, quality:0.1 },
+      rules: {
+        // Produktivitas: min % dari basis
+        productivity: [
+          { minPct: 110, score: 5 },
+          { minPct: 100, score: 4 },
+          { minPct: 90, score: 3 },
+          { minPct: 75, score: 2 },
+          { minPct: -1e9, score: 1 }
+        ],
+        // Kehadiran berbasis KODE:
+        // K = hadir
+        // S1/S2/C/P3/P4/H1/H2 = tidak hadir ber-keterangan (upah dibayar)
+        // M/P1 = mangkir / tanpa izin (score 0)
+        attendance: {
+          presentCodes: ['K'],
+          excusedCodes: ['S1','S2','C','P3','P4','H1','H2'],
+          mangkirCodes: ['M','P1'],
+          mangkirScore: 0,
+          excusedScoreByDays: { "0":5, "1":4, "2":3, "3":2, "4":1 } // "4" artinya >3 hari
+        },
+        // APD: jumlah APD yang tidak digunakan (dari 4 item)
+        apd: { missingScore: { "0":5, "1":4, "2":3, "3":2, "4":1 } },
+        // Losses: langsung input IPD
+        losses: [
+          { max: 0.25, score: 5 },
+          { max: 0.40, score: 4 },
+          { max: 0.60, score: 3 },
+          { max: 0.80, score: 2 },
+          { max: 1.00, score: 1 },
+          { max: 1e9, score: 0 }
+        ],
+        // Kualitas: input % BM/BKM/BMM/BTM/JJK.
+        // Jika BM > bmMax => skor maksimum 1.
+        quality: {
+          standards: { bmMax: 0, bkmMax: 5, bmmMin: 85, btmMax: 5, jjkMax: 1 },
+          // band BMM (matang) untuk skor 4/3/2, skor 5 jika memenuhi standar lengkap
+          bands: [
+            { min: 86, score: 5 },
+            { min: 80, score: 4 },
+            { min: 75, score: 3 },
+            { min: 70, score: 2 },
+            { min: -1e9, score: 1 }
+          ]
+        }
+      }
+    };
+  }
 
-  // Master Estate management (Admin)
+  function parseScoringJson_(){
+    const ta = document.getElementById('scoring_json');
+    const txt = (ta?.value||'').trim();
+    if(!txt) return defaultScoringRulesFront_();
+    try{
+      const obj = JSON.parse(txt);
+      if(!obj || typeof obj !== 'object') throw new Error('JSON harus objek');
+      return obj;
+    }catch(e){
+      throw new Error('JSON Skoring tidak valid: ' + e.message);
+    }
+  }
+
+  function pretty_(obj){
+    return JSON.stringify(obj, null, 2);
+  }
+
+  let scoringObj = defaultScoringRulesFront_();
+  try{
+    if (settings && settings.scoringRules) scoringObj = JSON.parse(settings.scoringRules);
+  }catch(e){
+    scoringObj = defaultScoringRulesFront_();
+  }
+
+  v.appendChild(h('div',{class:'mt-4'},[]));
+  
+  // ===== Pengaturan Skoring (Admin) - Visual Form + Advanced JSON =====
+
+  function val_(id){ return (document.getElementById(id).value||'').trim(); }
+    // helper parse number (untuk form skoring)
+  function num_(v, defv){
+    // terima number/string, dukung koma desimal
+    const s = String(v ?? '').trim().replace(',', '.');
+    const n = parseFloat(s);
+    return Number.isFinite(n) ? n : (defv ?? 0);
+  }
+  function fieldNum_(label,id,ph, extra){
+    return h('div',{},[
+      h('label',{class:'text-sm text-slate-600 dark:text-slate-300'},label),
+      h('input', Object.assign({id, type:'number', placeholder:ph||'', class:'mt-1 w-full rounded-2xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 px-3 py-3 text-sm'}, (extra||{})))
+    ]);
+  }
+  function fieldMiniNum_(label,id,ph){
+    return h('div',{},[
+      h('div',{class:'text-xs font-semibold text-slate-600 dark:text-slate-300'},label),
+      h('input',{id, type:'number', step:'0.1', placeholder:ph||'', class:'mt-1 w-full rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 px-2 py-2 text-sm'})
+    ]);
+  }
+
+  function normPctInput_(val){
+    const x = parseFloat(String(val||'').replace(',','.'));
+    return (isFinite(x) ? x : 0);
+  }
+  function safeGet_(obj, path, def){
+    try{
+      const parts = String(path).split('.');
+      let cur = obj;
+      for(const k of parts){
+        if(!cur || typeof cur!=='object') return def;
+        cur = cur[k];
+      }
+      return (cur===undefined || cur===null) ? def : cur;
+    }catch(e){ return def; }
+  }
+  function setPath_(obj, path, value){
+    const parts = String(path).split('.');
+    let cur = obj;
+    for(let i=0;i<parts.length-1;i++){
+      const k = parts[i];
+      if(!cur[k] || typeof cur[k] !== 'object') cur[k] = {};
+      cur = cur[k];
+    }
+    cur[parts[parts.length-1]] = value;
+  }
+
+  function buildScoringFromForm_(){
+    const o = Object.assign({}, scoringObj||{});
+    o.basisTonnage = normPctInput_(val_('sc_basis'));
+    o.passMin = normPctInput_(val_('sc_pass'));
+    // weights (as percent, will be normalized in backend too)
+    o.weights = {
+      productivity: normPctInput_(val_('w_prod'))/100,
+      attendance: normPctInput_(val_('w_att'))/100,
+      apd: normPctInput_(val_('w_apd'))/100,
+      losses: normPctInput_(val_('w_loss'))/100,
+      quality: normPctInput_(val_('w_qual'))/100,
+    };
+
+    // productivity thresholds (minPct for score 5..2; score 1 catch-all)
+    o.rules = o.rules || {};
+    o.rules.productivity = [
+      { minPct: normPctInput_(val_('p5')), score: 5 },
+      { minPct: normPctInput_(val_('p4')), score: 4 },
+      { minPct: normPctInput_(val_('p3')), score: 3 },
+      { minPct: normPctInput_(val_('p2')), score: 2 },
+      { minPct: -1e9, score: 1 },
+    ];
+
+    // attendance: excused days mapping + mangkir score + code groups
+    o.rules.attendance = o.rules.attendance || {};
+    o.rules.attendance.presentCodes = ['K'];
+    o.rules.attendance.excusedCodes = ['S1','S2','C','P3','P4','H1','H2'];
+    o.rules.attendance.mangkirCodes = ['M','P1'];
+    o.rules.attendance.mangkirScore = normPctInput_(val_('att_mangkir'));
+    o.rules.attendance.excusedScoreByDays = {
+      "0": normPctInput_(val_('att0')),
+      "1": normPctInput_(val_('att1')),
+      "2": normPctInput_(val_('att2')),
+      "3": normPctInput_(val_('att3')),
+      "4": normPctInput_(val_('att4')) // >3 hari
+    };
+
+    // APD missing map
+    o.rules.apd = o.rules.apd || {};
+    o.rules.apd.missingScore = {
+      "0": normPctInput_(val_('apd0')),
+      "1": normPctInput_(val_('apd1')),
+      "2": normPctInput_(val_('apd2')),
+      "3": normPctInput_(val_('apd3')),
+      "4": normPctInput_(val_('apd4'))
+    };
+
+    // losses bands by max
+    o.rules.losses = [
+      { max: normPctInput_(val_('l5')), score: 5 },
+      { max: normPctInput_(val_('l4')), score: 4 },
+      { max: normPctInput_(val_('l3')), score: 3 },
+      { max: normPctInput_(val_('l2')), score: 2 },
+      { max: normPctInput_(val_('l1')), score: 1 },
+      { max: 1e9, score: 0 },
+    ];
+
+    // quality standards + bands by BMM (matang)
+    o.rules.quality = o.rules.quality || {};
+    o.rules.quality.standards = {
+      bmMax: normPctInput_(val_('q_bm_max')),
+      bkmMax: normPctInput_(val_('q_bkm_max')),
+      bmmMin: normPctInput_(val_('q_bmm_min')),
+      btmMax: normPctInput_(val_('q_btm_max')),
+      jjkMax: normPctInput_(val_('q_jjk_max')),
+    };
+    o.rules.quality.bands = [
+      { min: normPctInput_(val_('q5')), score: 5 }, // >= ini dianggap "memenuhi standar matang"
+      { min: normPctInput_(val_('q4')), score: 4 },
+      { min: normPctInput_(val_('q3')), score: 3 },
+      { min: normPctInput_(val_('q2')), score: 2 },
+      { min: -1e9, score: 1 }
+    ];
+    return o;
+  }
+
+  function fillScoringForm_(o){
+    // top values
+    document.getElementById('sc_basis').value = String(o.basisTonnage ?? 1);
+    document.getElementById('sc_pass').value = String(o.passMin ?? 3.5);
+
+    const ww = o.weights || {};
+    document.getElementById('w_prod').value = String(Math.round((num_(ww.productivity)||0.4)*100));
+    document.getElementById('w_att').value = String(Math.round((num_(ww.attendance)||0.3)*100));
+    document.getElementById('w_apd').value = String(Math.round((num_(ww.apd)||0.1)*100));
+    document.getElementById('w_loss').value = String(Math.round((num_(ww.losses)||0.1)*100));
+    document.getElementById('w_qual').value = String(Math.round((num_(ww.quality)||0.1)*100));
+
+    const pr = Array.isArray(o.rules?.productivity) ? o.rules.productivity : [];
+    const getMin = (score, def) => {
+      const hit = pr.find(x => num_(x.score)===score);
+      return (hit ? num_(hit.minPct) : def);
+    };
+    document.getElementById('p5').value = String(getMin(5,110));
+    document.getElementById('p4').value = String(getMin(4,100));
+    document.getElementById('p3').value = String(getMin(3,90));
+    document.getElementById('p2').value = String(getMin(2,75));
+
+    const att = o.rules?.attendance || {};
+    const ex = att.excusedScoreByDays || {};
+    document.getElementById('att0').value = String(num_(ex["0"] ?? 5));
+    document.getElementById('att1').value = String(num_(ex["1"] ?? 4));
+    document.getElementById('att2').value = String(num_(ex["2"] ?? 3));
+    document.getElementById('att3').value = String(num_(ex["3"] ?? 2));
+    document.getElementById('att4').value = String(num_(ex["4"] ?? 1));
+    document.getElementById('att_mangkir').value = String(num_(att.mangkirScore ?? 0));
+
+    const apd = o.rules?.apd || {};
+    const ms = apd.missingScore || {};
+    document.getElementById('apd0').value = String(num_(ms["0"] ?? 5));
+    document.getElementById('apd1').value = String(num_(ms["1"] ?? 4));
+    document.getElementById('apd2').value = String(num_(ms["2"] ?? 3));
+    document.getElementById('apd3').value = String(num_(ms["3"] ?? 2));
+    document.getElementById('apd4').value = String(num_(ms["4"] ?? 1));
+
+    const lo = Array.isArray(o.rules?.losses) ? o.rules.losses : [];
+    const getMax = (score, def) => {
+      const hit = lo.find(x => num_(x.score)===score);
+      return (hit ? num_(hit.max) : def);
+    };
+    document.getElementById('l5').value = String(getMax(5,0.25));
+    document.getElementById('l4').value = String(getMax(4,0.40));
+    document.getElementById('l3').value = String(getMax(3,0.60));
+    document.getElementById('l2').value = String(getMax(2,0.80));
+    document.getElementById('l1').value = String(getMax(1,1.00));
+
+    const q = o.rules?.quality || {};
+    const st = q.standards || {};
+    document.getElementById('q_bm_max').value = String(num_(st.bmMax ?? 0));
+    document.getElementById('q_bkm_max').value = String(num_(st.bkmMax ?? 5));
+    document.getElementById('q_bmm_min').value = String(num_(st.bmmMin ?? 85));
+    document.getElementById('q_btm_max').value = String(num_(st.btmMax ?? 5));
+    document.getElementById('q_jjk_max').value = String(num_(st.jjkMax ?? 1));
+
+    const qb = Array.isArray(q.bands) ? q.bands : [];
+    const getQMin = (score, def) => {
+      const hit = qb.find(x => num_(x.score)===score);
+      return (hit ? num_(hit.min) : def);
+    };
+    document.getElementById('q5').value = String(getQMin(5,86)); // default: >=86 dianggap memenuhi "BMM>85"
+    document.getElementById('q4').value = String(getQMin(4,80));
+    document.getElementById('q3').value = String(getQMin(3,75));
+    document.getElementById('q2').value = String(getQMin(2,70));
+
+    // update JSON textarea
+    document.getElementById('scoring_json').value = pretty_(o);
+  }
+
+  v.appendChild(h('div',{class:'mt-4'},[]));
+  v.appendChild(card([
+    h('div',{class:'font-semibold'},'Pengaturan Skoring Sekolah Pemanen'),
+    h('div',{class:'text-xs text-slate-500 dark:text-slate-400 mt-1'},'Form visual untuk orang awam. Tombol Simpan akan menyimpan ke Settings.key = "scoringRules" (format JSON).'),
+    h('div',{class:'mt-4 grid md:grid-cols-2 gap-3'},[
+      fieldNum_('Basis Produktivitas (ton/HK)','sc_basis','1.0',{step:'0.01'}),
+      fieldNum_('Nilai Minimum Kelulusan','sc_pass','3.5',{step:'0.01'}),
+    ]),
+    h('div',{class:'mt-4'},[
+      h('div',{class:'font-semibold text-sm'},'Bobot Nilai (%)'),
+      h('div',{class:'mt-2 grid md:grid-cols-5 gap-2'},[
+        fieldMiniNum_('Produktivitas','w_prod','40'),
+        fieldMiniNum_('Kehadiran','w_att','30'),
+        fieldMiniNum_('APD','w_apd','10'),
+        fieldMiniNum_('Losses','w_loss','10'),
+        fieldMiniNum_('Kualitas','w_qual','10'),
+      ]),
+      h('div',{class:'text-xs text-slate-500 dark:text-slate-400 mt-1'},'Tips: tidak harus pas 100% (akan dinormalisasi otomatis).')
+    ]),
+    h('div',{class:'mt-4'},[
+      h('div',{class:'font-semibold text-sm'},'Skoring Produktivitas (% dari basis)'),
+      h('div',{class:'mt-2 grid md:grid-cols-4 gap-2'},[
+        fieldMiniNum_('Skor 5: min %','p5','110'),
+        fieldMiniNum_('Skor 4: min %','p4','100'),
+        fieldMiniNum_('Skor 3: min %','p3','90'),
+        fieldMiniNum_('Skor 2: min %','p2','75'),
+      ]),
+      h('div',{class:'text-xs text-slate-500 dark:text-slate-400 mt-1'},'Skor 1 otomatis untuk nilai di bawah batas Skor 2.')
+    ]),
+    h('div',{class:'mt-4'},[
+      h('div',{class:'font-semibold text-sm'},'Skoring Kehadiran (berdasarkan hari tidak hadir dengan keterangan)'),
+      h('div',{class:'mt-2 grid md:grid-cols-6 gap-2'},[
+        fieldMiniNum_('0 hari','att0','5'),
+        fieldMiniNum_('1 hari','att1','4'),
+        fieldMiniNum_('2 hari','att2','3'),
+        fieldMiniNum_('3 hari','att3','2'),
+        fieldMiniNum_('>3 hari','att4','1'),
+        fieldMiniNum_('Mangkir/P1','att_mangkir','0'),
+      ]),
+      h('div',{class:'text-xs text-slate-500 dark:text-slate-400 mt-1'},'Kode: K=hadir; S1/S2/C/P3/P4/H1/H2 dihitung sebagai "berketerangan"; M/P1 dianggap mangkir/tanpa izin.')
+    ]),
+    h('div',{class:'mt-4'},[
+      h('div',{class:'font-semibold text-sm'},'Skoring APD (jumlah APD yang tidak digunakan)'),
+      h('div',{class:'mt-2 grid md:grid-cols-5 gap-2'},[
+        fieldMiniNum_('0 APD kurang','apd0','5'),
+        fieldMiniNum_('1 APD kurang','apd1','4'),
+        fieldMiniNum_('2 APD kurang','apd2','3'),
+        fieldMiniNum_('3 APD kurang','apd3','2'),
+        fieldMiniNum_('4 APD kurang','apd4','1'),
+      ]),
+    ]),
+    h('div',{class:'mt-4'},[
+      h('div',{class:'font-semibold text-sm'},'Skoring Losses (IPD)'),
+      h('div',{class:'mt-2 grid md:grid-cols-5 gap-2'},[
+        fieldMiniNum_('Skor 5: max','l5','0.25'),
+        fieldMiniNum_('Skor 4: max','l4','0.40'),
+        fieldMiniNum_('Skor 3: max','l3','0.60'),
+        fieldMiniNum_('Skor 2: max','l2','0.80'),
+        fieldMiniNum_('Skor 1: max','l1','1.00'),
+      ]),
+      h('div',{class:'text-xs text-slate-500 dark:text-slate-400 mt-1'},'> batas Skor 1 akan otomatis skor 0.')
+    ]),
+    h('div',{class:'mt-4'},[
+      h('div',{class:'font-semibold text-sm'},'Kualitas TBS (Standar & Skoring BMM)'),
+      h('div',{class:'mt-2 grid md:grid-cols-5 gap-2'},[
+        fieldMiniNum_('BM max %','q_bm_max','0'),
+        fieldMiniNum_('BKM max %','q_bkm_max','5'),
+        fieldMiniNum_('BMM min %','q_bmm_min','85'),
+        fieldMiniNum_('BTM max %','q_btm_max','5'),
+        fieldMiniNum_('JJK max %','q_jjk_max','1'),
+      ]),
+      h('div',{class:'mt-3 grid md:grid-cols-4 gap-2'},[
+        fieldMiniNum_('Skor 5 (BMM ≥)','q5','86'),
+        fieldMiniNum_('Skor 4 (BMM ≥)','q4','80'),
+        fieldMiniNum_('Skor 3 (BMM ≥)','q3','75'),
+        fieldMiniNum_('Skor 2 (BMM ≥)','q2','70'),
+      ]),
+      h('div',{class:'text-xs text-slate-500 dark:text-slate-400 mt-1'},'Jika BM > BM max → skor kualitas maksimum 1 (ada buah mentah).')
+    ]),
+    h('details',{class:'mt-4'},[
+      h('summary',{class:'cursor-pointer text-sm font-semibold'},'Advanced: JSON (opsional)'),
+      h('div',{class:'mt-2'},[
+        h('textarea',{id:'scoring_json', rows:16, class:'w-full rounded-2xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 px-3 py-3 text-xs font-mono'}, pretty_(scoringObj))
+      ])
+    ]),
+    h('div',{class:'mt-3 flex flex-wrap gap-2 justify-end'},[
+      h('button',{id:'btnScoringReset', class:'rounded-2xl px-4 py-3 border border-slate-200 dark:border-slate-800 text-sm'},'Reset Default'),
+      h('button',{id:'btnScoringApply', class:'rounded-2xl px-4 py-3 border border-slate-200 dark:border-slate-800 text-sm'},'Terapkan dari Form'),
+      h('button',{id:'btnScoringSave', class:'rounded-2xl px-4 py-3 bg-slate-900 text-white dark:bg-slate-100 dark:text-slate-900 text-sm flex items-center gap-2'},[
+        h('span',{'data-spinner':'', class:'hidden w-4 h-4 border-2 border-white/40 border-t-white rounded-full animate-spin'}),
+        h('span',{'data-label':'','data-orig':'Simpan'},'Simpan')
+      ])
+    ])
+  ]));
+
+  // init form
+  fillScoringForm_(scoringObj);
+
+  document.getElementById('btnScoringApply').onclick = ()=>{
+    try{
+      scoringObj = buildScoringFromForm_();
+      document.getElementById('scoring_json').value = pretty_(scoringObj);
+      toast('Form diterapkan ke JSON', 'ok');
+    }catch(e){ toast(e.message,'error'); }
+  };
+
+  document.getElementById('btnScoringReset').onclick = ()=>{
+    scoringObj = defaultScoringRulesFront_();
+    fillScoringForm_(scoringObj);
+    toast('Reset ke default', 'ok');
+  };
+
+  document.getElementById('btnScoringSave').onclick = async ()=>{
+    const btn = document.getElementById('btnScoringSave');
+    btnBusy(btn,true,'Menyimpan...');
+    try{
+      // prioritas: ambil dari form → update JSON → save JSON
+      scoringObj = buildScoringFromForm_();
+      const payload = { scoringRules: pretty_(scoringObj) };
+      const rr = await callOrQueue(() => callApi('setSettings', payload), 'setSettings', payload, 'Simpan scoring rules');
+      if(!rr.ok) throw new Error(rr.error||'Gagal menyimpan');
+      toast(rr.queued ? 'Di-antrikan (offline). Nanti lakukan Sinkronisasi.' : 'Pengaturan skoring tersimpan', rr.queued ? 'info' : 'ok');
+      settings.scoringRules = payload.scoringRules;
+    }catch(e){ toast(e.message,'error'); }
+    finally{ btnBusy(btn,false,'Simpan'); }
+  };
+
+
+// Master Estate management (Admin)
   v.appendChild(h('div',{class:'mt-4'},[]));
   const estatesHolder = h('div',{id:'masterEstatesHolder'},[h('div',{class:'text-sm text-slate-500'},'Memuat Master Estate...')]);
   v.appendChild(card([

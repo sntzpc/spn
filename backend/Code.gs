@@ -1465,8 +1465,29 @@ function submitDailyLog_(sess, p) {
 
   // ✅ Ensure header sesuai sheet Anda
   ensureColumns_('DailyLogs', [
-    'log_id','program_id','participant_id','mentor_id','date','attendance','tonnage','mutu_grade',
-    'losses_brondolan','apd_ok','discipline_score','mentor_note','mandor_note','assistant_note',
+    'log_id','program_id','participant_id','mentor_id','date',
+    // Kehadiran kode: K/S1/S2/C/P3/P4/H1/H2/P1/M
+    'attendance',
+    // Produktivitas & Disiplin
+    'tonnage','discipline_score',
+
+    // APD checklist per item (TRUE/FALSE)
+    'apd_helm','apd_boot','apd_gloves','apd_sleeve',
+    // legacy: TRUE jika semua APD dipakai
+    'apd_ok',
+
+    // Losses langsung input IPD
+    'losses_ipd',
+    // legacy (masih dipertahankan)
+    'losses_brondolan',
+
+    // Kualitas (% aktual)
+    'q_bm','q_bkm','q_bmm','q_btm','q_jjk',
+    // legacy
+    'mutu_grade',
+
+    // Notes
+    'mentor_note','mandor_note','assistant_note',
     'created_by','created_at','updated_at'
   ]);
 
@@ -1497,12 +1518,35 @@ function submitDailyLog_(sess, p) {
     participant_id,
     mentor_id,
     date,
+
+    // Kehadiran (kode)
     attendance: String(p.attendance||'').trim(),
+
+    // Produktivitas & disiplin
     tonnage: String(p.tonnage||'').trim(),
-    mutu_grade: String(p.mutu_grade||'').trim(),
-    losses_brondolan: String(p.losses_brondolan||'').trim(),
+    discipline_score: String(p.discipline_score||'').trim(),
+
+    // APD checklist per item
+    apd_helm: String(p.apd_helm||'').trim(),
+    apd_boot: String(p.apd_boot||'').trim(),
+    apd_gloves: String(p.apd_gloves||'').trim(),
+    apd_sleeve: String(p.apd_sleeve||'').trim(),
+    // legacy: TRUE jika semua dipakai
     apd_ok: (String(p.apd_ok||'').trim() || 'TRUE'),
-    discipline_score: String(p.discipline_score||'').trim()
+
+    // Losses IPD
+    losses_ipd: String(p.losses_ipd||'').trim(),
+    // legacy
+    losses_brondolan: String(p.losses_brondolan||'').trim(),
+
+    // Kualitas (%)
+    q_bm: String(p.q_bm||'').trim(),
+    q_bkm: String(p.q_bkm||'').trim(),
+    q_bmm: String(p.q_bmm||'').trim(),
+    q_btm: String(p.q_btm||'').trim(),
+    q_jjk: String(p.q_jjk||'').trim(),
+    // legacy
+    mutu_grade: String(p.mutu_grade||'').trim(),
   };
 
   // UPSERT by (program_id, participant_id, date)
@@ -1846,6 +1890,303 @@ function listMonthlyRecaps_(sess, p){
   return { ok:true, month: month_key, month_start, month_end, items };
 }
 
+
+// -------------------- Scoring Rules (Skoring Sekolah Pemanen) --------------------
+function defaultScoringRules_() {
+  return {
+    basisTonnage: 1, // ton/hari sebagai basis pembanding produktivitas
+    passMin: 3.5,
+    weights: { productivity:0.4, attendance:0.3, apd:0.1, losses:0.1, quality:0.1 },
+    rules: {
+      productivity: [
+        { minPct: 110, score: 5 },
+        { minPct: 100, score: 4 },
+        { minPct: 90, score: 3 },
+        { minPct: 75, score: 2 },
+        { minPct: -1e9, score: 1 }
+      ],
+      attendance: {
+        presentCodes: ['K'],
+        excusedCodes: ['S1','S2','C','P3','P4','H1','H2'],
+        mangkirCodes: ['M','P1'],
+        mangkirScore: 0,
+        excusedScoreByDays: { "0":5, "1":4, "2":3, "3":2, "4":1 } // "4" artinya >3 hari
+      },
+      apd: { missingScore: { "0":5, "1":4, "2":3, "3":2, "4":1 } },
+      losses: [
+        { max: 0.25, score: 5 },
+        { max: 0.40, score: 4 },
+        { max: 0.60, score: 3 },
+        { max: 0.80, score: 2 },
+        { max: 1.00, score: 1 },
+        { max: 1e9, score: 0 }
+      ],
+      quality: {
+        standards: { bmMax: 0, bkmMax: 5, bmmMin: 85, btmMax: 5, jjkMax: 1 },
+        bands: [
+          { min: 86, score: 5 },
+          { min: 80, score: 4 },
+          { min: 75, score: 3 },
+          { min: 70, score: 2 },
+          { min: -1e9, score: 1 }
+        ]
+      }
+    }
+  };
+}
+
+function getScoringRules_() {
+  const map = {};
+  sheetToObjects_('Settings').forEach(r => { map[String(r.key||'').trim()] = String(r.value||''); });
+  const raw = String(map.scoringRules || '').trim();
+  if (!raw) return defaultScoringRules_();
+  try {
+    const parsed = JSON.parse(raw);
+    // merge with defaults to keep forward compatibility
+    const def = defaultScoringRules_();
+    const out = Object.assign({}, def, parsed||{});
+    out.weights = Object.assign({}, def.weights, (parsed && parsed.weights) ? parsed.weights : {});
+    out.rules = Object.assign({}, def.rules, (parsed && parsed.rules) ? parsed.rules : {});
+    return out;
+  } catch(e) {
+    return defaultScoringRules_();
+  }
+}
+
+function normalizeWeights_(w) {
+  const ww = w || {};
+  const keys = ['productivity','attendance','apd','losses','quality'];
+  let sum = 0;
+  keys.forEach(k => { sum += num_(ww[k]); });
+  if (!isFinite(sum) || sum <= 0) sum = 1;
+  const out = {};
+  keys.forEach(k => { out[k] = num_(ww[k]) / sum; });
+  return out;
+}
+
+function scoreByMinPct_(bands, pct) {
+  const arr = Array.isArray(bands) ? bands.slice() : [];
+  arr.sort((a,b)=> num_(b.minPct) - num_(a.minPct));
+  for (let i=0;i<arr.length;i++){
+    const b = arr[i] || {};
+    if (pct >= num_(b.minPct)) return num_(b.score);
+  }
+  return 0;
+}
+
+function scoreByMax_(bands, value) {
+  const arr = Array.isArray(bands) ? bands.slice() : [];
+  arr.sort((a,b)=> num_(a.max) - num_(b.max));
+  for (let i=0;i<arr.length;i++){
+    const b = arr[i] || {};
+    if (value <= num_(b.max)) return num_(b.score);
+  }
+  return 0;
+}
+
+function scoreAttendance_(rule, hadirCount, sickCount, mangkirCount, totalLogs) {
+  const r = rule || {};
+  if (mangkirCount > 0) return num_(r.mangkirScore);
+  // kalau totalLogs 0, tidak ada basis penilaian
+  if (!totalLogs) return 0;
+  const m = r.sickScore || {};
+  const k = String(sickCount||0);
+  if (m.hasOwnProperty(k)) return num_(m[k]);
+  return num_(m["default"]);
+}
+
+function scoreMissingMap_(missingScoreMap, missingCount) {
+  const m = missingScoreMap || {};
+  const k = String(missingCount||0);
+  if (m.hasOwnProperty(k)) return num_(m[k]);
+  return num_(m["default"]);
+}
+
+function scoreQuality_(rule, mutuNums) {
+  const r = rule || {};
+  const nums = (mutuNums||[]).filter(v=>isFinite(v));
+  if (!nums.length) return 0;
+  const unripeBelow = num_(r.unripeBelow);
+  if (isFinite(unripeBelow) && nums.some(v => v < unripeBelow)) return 1;
+  const avg = avg_(nums);
+  const bands = Array.isArray(r.bands) ? r.bands.slice() : [];
+  bands.sort((a,b)=> num_(b.min) - num_(a.min));
+  for (let i=0;i<bands.length;i++){
+    const b = bands[i] || {};
+    if (avg >= num_(b.min)) return num_(b.score);
+  }
+  return 1;
+}
+
+function computeFinalScore_(logsArr, rules) {
+  const rr = rules || defaultScoringRules_();
+  const w = normalizeWeights_(rr.weights);
+
+  const arr = logsArr || [];
+  const totalLogs = arr.length;
+
+  // =====================
+  // Produktivitas (avg tonnage vs basis)
+  // =====================
+  const ton = avg_(arr.map(x => num_(x.tonnage)));
+  const basis = num_(rr.basisTonnage);
+  const prodPct = (isFinite(ton) && isFinite(basis) && basis > 0) ? (ton / basis * 100) : NaN;
+  const prodScore = isFinite(prodPct) ? scoreByMinPct_(rr.rules.productivity, prodPct) : 0;
+
+  // =====================
+  // Kehadiran (kode)
+  // =====================
+  const attRule = (rr.rules||{}).attendance || {};
+  const presentCodes = (attRule.presentCodes || ['K']).map(s=>String(s||'').toUpperCase());
+  const excusedCodes = (attRule.excusedCodes || ['S1','S2','C','P3','P4','H1','H2']).map(s=>String(s||'').toUpperCase());
+  const mangkirCodes = (attRule.mangkirCodes || ['M','P1']).map(s=>String(s||'').toUpperCase());
+
+  const attCodes = arr.map(x => String(x.attendance||'').trim().toUpperCase());
+  const hadirCount = attCodes.filter(c => presentCodes.indexOf(c) >= 0).length;
+  const excusedCount = attCodes.filter(c => excusedCodes.indexOf(c) >= 0).length;
+  const mangkirCount = attCodes.filter(c => mangkirCodes.indexOf(c) >= 0).length;
+
+  let attScore = 0;
+  if (totalLogs <= 0) {
+    attScore = 0;
+  } else if (mangkirCount > 0) {
+    attScore = num_(attRule.mangkirScore);
+  } else {
+    const absentExcusedDays = Math.max(0, totalLogs - hadirCount); // termasuk excused
+    const map = attRule.excusedScoreByDays || { "0":5, "1":4, "2":3, "3":2, "4":1 };
+    const key = (absentExcusedDays <= 3) ? String(absentExcusedDays) : "4";
+    attScore = num_(map[key]);
+  }
+
+  const attendancePct = pct_(hadirCount, totalLogs);
+
+  // =====================
+  // APD (checklist per item)
+  // =====================
+  function bool_(v){
+    const s = String(v||'').trim().toLowerCase();
+    if (s === 'true' || s === '1' || s === 'y' || s === 'yes') return true;
+    if (s === 'false' || s === '0' || s === 'n' || s === 'no') return false;
+    return !!v;
+  }
+  const missPerLog = arr.map(x => {
+    // jika kolom baru kosong, fallback ke apd_ok
+    const hasNew = (String(x.apd_helm||'')!=='' || String(x.apd_boot||'')!=='' || String(x.apd_gloves||'')!=='' || String(x.apd_sleeve||'')!=='');
+    if (!hasNew) {
+      const ok = String(x.apd_ok||'').trim().toLowerCase() === 'true';
+      return ok ? 0 : 1; // fallback kasar
+    }
+    const used = [bool_(x.apd_helm), bool_(x.apd_boot), bool_(x.apd_gloves), bool_(x.apd_sleeve)];
+    const usedCount = used.filter(Boolean).length;
+    return Math.max(0, 4 - usedCount);
+  });
+  const apdMissingAvg = (totalLogs>0) ? (sum_(missPerLog)/totalLogs) : NaN;
+  const apdMissingRounded = isFinite(apdMissingAvg) ? Math.round(apdMissingAvg) : 0;
+  const apdOkCount = missPerLog.filter(m => m===0).length;
+  const apdPct = pct_(apdOkCount, totalLogs);
+  const apdScore = scoreMissingMap_(((rr.rules||{}).apd||{}).missingScore, apdMissingRounded);
+
+  // =====================
+  // Losses (IPD input langsung)
+  // =====================
+  const lossesVals = arr.map(x => {
+    const ipd = num_(x.losses_ipd);
+    if (isFinite(ipd)) return ipd;
+    // fallback lama: losses_brondolan / tonnage
+    const lb = num_(x.losses_brondolan);
+    const t = num_(x.tonnage);
+    if (isFinite(lb) && isFinite(t) && t>0) return (lb/t);
+    return NaN;
+  }).filter(v => isFinite(v));
+  const lossesIpdAvg = lossesVals.length ? avg_(lossesVals) : NaN;
+  const lossesScore = isFinite(lossesIpdAvg) ? scoreByMax_(rr.rules.losses, lossesIpdAvg) : 0;
+
+  // =====================
+  // Kualitas (BM/BKM/BMM/BTM/JJK)
+  // =====================
+  function scoreQualityParts_(qRule, rec){
+    const qr = qRule || {};
+    const st = qr.standards || {};
+    const bm = num_(rec.q_bm);
+    const bkm = num_(rec.q_bkm);
+    const bmm = num_(rec.q_bmm);
+    const btm = num_(rec.q_btm);
+    const jjk = num_(rec.q_jjk);
+
+    const bmMax = num_(st.bmMax);
+    // jika ada BM > standar → max score 1
+    if (isFinite(bm) && isFinite(bmMax) && bm > bmMax) return 1;
+
+    // jika memenuhi seluruh standar → score 5
+    const okStd =
+      (isFinite(bm) ? bm <= num_(st.bmMax) : true) &&
+      (isFinite(bkm) ? bkm < num_(st.bkmMax) : true) &&
+      (isFinite(btm) ? btm < num_(st.btmMax) : true) &&
+      (isFinite(jjk) ? jjk < num_(st.jjkMax) : true) &&
+      (isFinite(bmm) ? bmm > num_(st.bmmMin) : false);
+
+    if (okStd) return 5;
+
+    // selain itu, skoring berdasarkan BMM band (tetap syarat: BM tidak melanggar)
+    const bands = Array.isArray(qr.bands) ? qr.bands.slice() : [];
+    bands.sort((a,b)=> num_(b.min) - num_(a.min));
+    const bmmV = isFinite(bmm) ? bmm : NaN;
+    if (!isFinite(bmmV)) return 0;
+    for (let i=0;i<bands.length;i++){
+      if (bmmV >= num_(bands[i].min)) return num_(bands[i].score);
+    }
+    return 1;
+  }
+
+  const qScores = arr.map(x => scoreQualityParts_(((rr.rules||{}).quality||{}), x)).filter(v => isFinite(v));
+  const qualityScore = qScores.length ? avg_(qScores) : 0;
+
+  // =====================
+  // Disiplin (informasi saja)
+  // =====================
+  const discAvg = avg_(arr.map(x => num_(x.discipline_score)));
+
+  const finalScore =
+    (prodScore*w.productivity) +
+    (attScore*w.attendance) +
+    (apdScore*w.apd) +
+    (lossesScore*w.losses) +
+    (qualityScore*w.quality);
+
+  return {
+    total_logs: totalLogs,
+    avg_tonnage: isFinite(ton) ? ton : NaN,
+    productivity_pct: isFinite(prodPct) ? prodPct : NaN,
+
+    // attendance
+    attendance_pct: isFinite(attendancePct) ? attendancePct : NaN,
+    hadir_count: hadirCount,
+    excused_count: excusedCount,
+    mangkir_count: mangkirCount,
+
+    // apd
+    apd_pct: isFinite(apdPct) ? apdPct : NaN,
+    apd_missing_avg: isFinite(apdMissingAvg) ? apdMissingAvg : NaN,
+    apd_missing_round: apdMissingRounded,
+    apd_ok_count: apdOkCount,
+
+    // losses
+    losses_ipd_avg: isFinite(lossesIpdAvg) ? lossesIpdAvg : NaN,
+
+    // quality (info ringkas)
+    score_productivity: prodScore,
+    score_attendance: attScore,
+    score_apd: apdScore,
+    score_losses: lossesScore,
+    score_quality: qualityScore,
+
+    discipline_avg: isFinite(discAvg) ? discAvg : NaN,
+    final_score: finalScore,
+    pass_min: num_(rr.passMin),
+    passed: (isFinite(finalScore) && finalScore >= num_(rr.passMin))
+  };
+}
+
 function listFinalRecap_(sess, p){
   if (!inRoles_(sess, ['ADMIN','MANAGER','ASISTEN'])) return { ok:false, error:'Hanya ADMIN/MANAGER/ASISTEN' };
   const ctx = resolveProgramContext_(sess, p || {}, true);
@@ -1856,25 +2197,31 @@ function listFinalRecap_(sess, p){
   const ps = toISODate_(prog.period_start || prog.start_date || '');
   const pe = toISODate_(prog.period_end || prog.end_date || '');
 
-  const logsAll = sheetToObjects_('DailyLogs').filter(x => String(x.program_id||'') === programId);
-  const allDates = logsAll.map(x => toISODate_(x.date||'')).filter(Boolean).sort();
+  const logsAll0 = sheetToObjects_('DailyLogs').filter(x => String(x.program_id||'') === programId);
+  const allDates = logsAll0.map(x => toISODate_(x.date||'')).filter(Boolean).sort();
   const period_start = ps || (allDates.length ? allDates[0] : formatDate_(new Date()));
   const period_end = pe || (allDates.length ? allDates[allDates.length-1] : formatDate_(new Date()));
 
-  const logs = logsAll.filter(x => {
+  const logsAll = logsAll0.filter(x => {
     const d = toISODate_(x.date||'');
     return d && d >= period_start && d <= period_end;
   });
 
   const byPid = {};
-  logs.forEach(l => {
+  logsAll.forEach(l => {
     const pid = String(l.participant_id||'').trim();
     if (!pid) return;
     if (!byPid[pid]) byPid[pid] = [];
     byPid[pid].push(l);
   });
 
-  const participants = sheetToObjects_('Participants').filter(x => String(x.program_id||'') === programId);
+  // Participants + scope filter (non-admin dibatasi estate/divisi)
+  let participantsAll = sheetToObjects_('Participants').filter(x => String(x.program_id||'') === programId);
+  if (!isAdmin_(sess)) {
+    participantsAll = participantsAll.filter(x => scopeMatchesEstateDivisiRelaxed_(sess, x.estate, x.divisi));
+  }
+
+  // Graduation decision (latest)
   const grads = sheetToObjects_('Graduations').filter(x => String(x.program_id||'') === programId);
   const latestByPid = {};
   grads.forEach(g => {
@@ -1884,51 +2231,21 @@ function listFinalRecap_(sess, p){
     if (!latestByPid[pid] || String(latestByPid[pid].approved_at||'') < ts) latestByPid[pid] = g;
   });
 
-  const setMap = {};
-  sheetToObjects_('Settings').forEach(r => { setMap[String(r.key||'').trim()] = String(r.value||''); });
-  const th = {
-    min_attendance_pct: num_(setMap.grad_min_attendance_pct),
-    min_apd_pct: num_(setMap.grad_min_apd_pct),
-    min_discipline_avg: num_(setMap.grad_min_discipline_avg),
-    min_avg_mutu: num_(setMap.grad_min_avg_mutu),
-    min_avg_tonnage: num_(setMap.grad_min_avg_tonnage),
-    max_losses_rate: num_(setMap.grad_max_losses_rate),
-  };
-  if (!isFinite(th.min_attendance_pct)) th.min_attendance_pct = 80;
-  if (!isFinite(th.min_apd_pct)) th.min_apd_pct = 80;
-  if (!isFinite(th.min_discipline_avg)) th.min_discipline_avg = 70;
-  if (!isFinite(th.min_avg_mutu)) th.min_avg_mutu = 75;
-  if (!isFinite(th.max_losses_rate)) th.max_losses_rate = 0.02;
-  if (!isFinite(th.min_avg_tonnage)) th.min_avg_tonnage = NaN;
+  // Scoring rules
+  const rules = getScoringRules_();
+  const passMin = num_(rules.passMin);
+  const passMinEff = isFinite(passMin) ? passMin : 3.5;
 
-  const items = (participants||[]).map(pt => {
+  const items = (participantsAll||[]).map(pt => {
     const pid = String(pt.participant_id||'').trim();
     if (!pid) return null;
     const arr = byPid[pid] || [];
 
-    const ton = avg_(arr.map(x => num_(x.tonnage)));
-    const disc = avg_(arr.map(x => num_(x.discipline_score)));
-    const hadirCount = arr.filter(x => String(x.attendance||'').trim().toLowerCase() === 'hadir').length;
-    const apdOkCount = arr.filter(x => String(x.apd_ok||'').trim().toLowerCase() === 'true').length;
-    const attendancePct = pct_(hadirCount, arr.length);
-    const apdPct = pct_(apdOkCount, arr.length);
-    const mutuNums = arr.map(x => num_(x.mutu_grade)).filter(v => isFinite(v));
-    const avgMutuNum = mutuNums.length ? avg_(mutuNums) : NaN;
-    const mutuText = isFinite(avgMutuNum) ? String(round2_(avgMutuNum)) : '';
-    const totalLosses = sum_(arr.map(x => num_(x.losses_brondolan)));
-    const totalTon = sum_(arr.map(x => num_(x.tonnage)));
-    const lossesRate = (isFinite(totalLosses) && isFinite(totalTon) && totalTon > 0) ? (totalLosses/totalTon) : NaN;
+    const sc = computeFinalScore_(arr, rules);
 
     let recommended = 'REVIEW';
-    const okAttendance = (attendancePct >= th.min_attendance_pct);
-    const okApd = (apdPct >= th.min_apd_pct);
-    const okDisc = (!isFinite(disc) ? false : (disc >= th.min_discipline_avg));
-    const okMutu = (!isFinite(avgMutuNum) ? false : (avgMutuNum >= th.min_avg_mutu));
-    const okLoss = (!isFinite(lossesRate) ? true : (lossesRate <= th.max_losses_rate));
-    const okTon = (!isFinite(th.min_avg_tonnage) ? true : (isFinite(ton) && ton >= th.min_avg_tonnage));
-
-    if (arr.length === 0) recommended = 'BELUM_ADA_LOG';
-    else if (okAttendance && okApd && okDisc && okMutu && okLoss && okTon) recommended = 'REKOM_LULUS';
+    if (!arr.length) recommended = 'BELUM_ADA_LOG';
+    else if (isFinite(sc.final_score) && sc.final_score >= passMinEff) recommended = 'REKOM_LULUS';
     else recommended = 'REKOM_TIDAK_LULUS';
 
     const g = latestByPid[pid] || {};
@@ -1938,15 +2255,38 @@ function listFinalRecap_(sess, p){
       participant_name: pt.name || '',
       participant_nik: pt.nik || '',
       status: pt.status || '',
-      total_logs: String(arr.length || 0),
+      total_logs: String(sc.total_logs || 0),
       period_start,
       period_end,
-      avg_tonnage: isFinite(ton) ? String(round2_(ton)) : '',
-      avg_mutu: mutuText || '',
-      losses_rate: isFinite(lossesRate) ? String(round4_(lossesRate)) : '',
-      attendance_pct: String(round2_(attendancePct || 0)),
-      apd_pct: String(round2_(apdPct || 0)),
-      discipline_avg: isFinite(disc) ? String(round2_(disc)) : '',
+
+      // rekap dasar
+      avg_tonnage: isFinite(sc.avg_tonnage) ? String(round2_(sc.avg_tonnage)) : '',
+      productivity_pct: isFinite(sc.productivity_pct) ? String(round2_(sc.productivity_pct)) : '',
+      avg_mutu: (function(){
+        const bmm = arr.map(x=>num_(x.q_bmm)).filter(v=>isFinite(v));
+        const v = bmm.length ? avg_(bmm) : NaN;
+        return isFinite(v) ? String(round2_(v)) : '';
+      })(),
+      losses_rate: isFinite(sc.losses_ipd_avg) ? String(round4_(sc.losses_ipd_avg)) : '',
+      attendance_pct: isFinite(sc.attendance_pct) ? String(round2_(sc.attendance_pct)) : '0',
+      apd_pct: isFinite(sc.apd_pct) ? String(round2_(sc.apd_pct)) : '0',
+      discipline_avg: isFinite(sc.discipline_avg) ? String(round2_(sc.discipline_avg)) : '',
+
+      hadir_count: String(sc.hadir_count || 0),
+      sick_count: String(sc.excused_count || 0),
+      mangkir_count: String(sc.mangkir_count || 0),
+      apd_missing: String(sc.apd_missing_round || 0),
+
+      // skor per parameter
+      score_productivity: String(round2_(sc.score_productivity)),
+      score_attendance: String(round2_(sc.score_attendance)),
+      score_apd: String(round2_(sc.score_apd)),
+      score_losses: String(round2_(sc.score_losses)),
+      score_quality: String(round2_(sc.score_quality)),
+
+      final_score: isFinite(sc.final_score) ? String(round2_(sc.final_score)) : '',
+      pass_min: String(round2_(passMinEff)),
+
       recommended,
       decision: g.decision || '',
       approved_at: g.approved_at || '',
@@ -1955,8 +2295,10 @@ function listFinalRecap_(sess, p){
   }).filter(Boolean);
 
   items.sort((a,b)=> String(a.participant_name||'').localeCompare(String(b.participant_name||'')) || String(a.participant_nik||'').localeCompare(String(b.participant_nik||'')));
-  return { ok:true, period_start, period_end, thresholds: th, items };
+  return { ok:true, period_start, period_end, scoring_rules: rules, pass_min: passMinEff, items };
 }
+
+
 
 
 function findWeeklyRecap_(programId, participantId, weekStart) {
@@ -2427,7 +2769,7 @@ function rbacAllowMap_() {
 
     // Pengaturan
     changeMyPin: ['ADMIN','MANAGER','KTU','ASISTEN','MANDOR','MENTOR','PESERTA'],
-    getSettings: ['ADMIN'],
+    getSettings: ['ADMIN','MANAGER','KTU','ASISTEN','MANDOR','MENTOR','PESERTA'],
     setSettings: ['ADMIN'],
     listUsers: ['ADMIN'],
     upsertUser: ['ADMIN'],
