@@ -1,0 +1,1014 @@
+<!DOCTYPE html>
+<html lang="id">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Konverter Absensi ke XLSX</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script defer src="https://cdn.jsdelivr.net/npm/exceljs@4.4.0/dist/exceljs.min.js"></script>
+
+  <style>
+    :root {
+      --bg-body: #f8fafc;
+      --text-main: #0f172a;
+      --text-muted: #334155;
+      --panel-bg: rgba(255,255,255,.96);
+      --panel-border: rgba(100,116,139,.28);
+      --card-bg: #ffffff;
+      --card-soft: #f8fafc;
+      --input-bg: #ffffff;
+      --input-border: #94a3b8;
+      --empty-bg: #f8fafc;
+      --empty-border: #cbd5e1;
+      --hero-badge-bg: rgba(8,145,178,.10);
+      --hero-badge-border: rgba(8,145,178,.25);
+      --hero-badge-text: #0f766e;
+      --hero-title: #0f172a;
+      --hero-subtitle: #334155;
+      --hero-overlay:
+        radial-gradient(circle at top right, rgba(59,130,246,.10), transparent 25%),
+        radial-gradient(circle at left, rgba(16,185,129,.08), transparent 22%),
+        linear-gradient(180deg, #f8fafc, #e2e8f0);
+      --shadow-panel: 0 25px 50px -12px rgba(15,23,42,.10);
+      --theme-btn-bg: #ffffff;
+      --theme-btn-border: #94a3b8;
+      --theme-btn-text: #0f172a;
+      --theme-btn-hover: #eef2f7;
+      --accent-soft: #ecfeff;
+      --accent-border: #67e8f9;
+      --accent-text: #0f766e;
+      --danger-soft: #fff1f2;
+      --danger-border: #fda4af;
+      --danger-text: #be123c;
+      --success-soft: #ecfdf5;
+      --success-border: #6ee7b7;
+      --success-text: #065f46;
+    }
+
+    html[data-theme="dark"] {
+      --bg-body: #020617;
+      --text-main: #f8fafc;
+      --text-muted: #94a3b8;
+      --panel-bg: rgba(255,255,255,.05);
+      --panel-border: rgba(255,255,255,.10);
+      --card-bg: rgba(2,6,23,.70);
+      --card-soft: rgba(15,23,42,1);
+      --input-bg: rgba(15,23,42,.80);
+      --input-border: #334155;
+      --empty-bg: rgba(2,6,23,.70);
+      --empty-border: #1f2937;
+      --hero-badge-bg: rgba(6,182,212,.10);
+      --hero-badge-border: rgba(34,211,238,.25);
+      --hero-badge-text: #67e8f9;
+      --hero-title: #ffffff;
+      --hero-subtitle: #cbd5e1;
+      --hero-overlay:
+        radial-gradient(circle at top right, rgba(59,130,246,.18), transparent 25%),
+        radial-gradient(circle at left, rgba(16,185,129,.12), transparent 22%),
+        linear-gradient(180deg, #020617, #0f172a);
+      --shadow-panel: 0 25px 50px -12px rgba(0,0,0,.35);
+      --theme-btn-bg: rgba(15,23,42,.85);
+      --theme-btn-border: rgba(148,163,184,.25);
+      --theme-btn-text: #f8fafc;
+      --theme-btn-hover: rgba(30,41,59,.95);
+    }
+
+    body {
+      background: var(--bg-body) !important;
+      color: var(--text-main) !important;
+      transition: background-color .25s ease, color .25s ease;
+    }
+
+    #themeOverlay {
+      background: var(--hero-overlay) !important;
+      transition: background .25s ease;
+    }
+
+    #heroBadge {
+      background: var(--hero-badge-bg) !important;
+      border-color: var(--hero-badge-border) !important;
+      color: var(--hero-badge-text) !important;
+    }
+
+    #pageTitle, .theme-title { color: var(--hero-title) !important; }
+    #pageSubtitle, .theme-muted, .theme-muted * { color: var(--hero-subtitle) !important; }
+
+    .theme-panel {
+      background: var(--panel-bg) !important;
+      border-color: var(--panel-border) !important;
+      box-shadow: var(--shadow-panel) !important;
+      color: var(--text-main) !important;
+      transition: background-color .25s ease, border-color .25s ease, box-shadow .25s ease, color .25s ease;
+    }
+
+    .theme-card {
+      background: var(--card-bg) !important;
+      border-color: var(--empty-border) !important;
+      color: var(--text-main) !important;
+      transition: background-color .25s ease, border-color .25s ease, color .25s ease;
+    }
+
+    .theme-card-soft {
+      background: var(--card-soft) !important;
+      border-color: var(--empty-border) !important;
+      color: var(--text-main) !important;
+    }
+
+    .theme-input {
+      background: var(--input-bg) !important;
+      border-color: var(--input-border) !important;
+      color: var(--text-main) !important;
+    }
+
+    .theme-input::placeholder { color: #94a3b8 !important; }
+
+    .theme-empty {
+      background: var(--empty-bg) !important;
+      border-color: var(--empty-border) !important;
+      color: var(--text-muted) !important;
+    }
+
+    #dbStatus { color: var(--text-muted) !important; }
+
+    .theme-toggle-btn {
+      background: var(--theme-btn-bg);
+      border: 1px solid var(--theme-btn-border);
+      color: var(--theme-btn-text);
+      transition: all .2s ease;
+      backdrop-filter: blur(10px);
+    }
+
+    .theme-toggle-btn:hover { background: var(--theme-btn-hover); }
+
+    .theme-toggle-btn svg { width: 1rem; height: 1rem; display: block; }
+
+    #previewPanel .text-white,
+    #fileList .text-white { color: var(--text-main) !important; }
+
+    #previewPanel .text-slate-400,
+    #previewPanel .text-slate-500,
+    #fileList .text-slate-400,
+    #fileList .text-slate-500,
+    .theme-subtle {
+      color: var(--text-muted) !important;
+    }
+
+    #previewPanel .bg-slate-900,
+    #previewPanel .bg-slate-900\/60,
+    #fileList .bg-slate-900,
+    #fileList .bg-slate-900\/60 {
+      background: var(--card-soft) !important;
+    }
+
+    #pageSubtitle .font-semibold { color: var(--hero-title) !important; }
+
+    #outputName,
+    #dbStatus,
+    .theme-card-soft,
+    .theme-card-soft *,
+    .theme-input,
+    .theme-input * {
+      color: var(--text-main) !important;
+    }
+
+    #uploadTrigger {
+      background: var(--accent-soft) !important;
+      border-color: var(--accent-border) !important;
+      color: var(--accent-text) !important;
+    }
+
+    #summaryBadge {
+      background: var(--success-soft) !important;
+      border-color: var(--success-border) !important;
+      color: var(--success-text) !important;
+    }
+
+    #btnClearDb {
+      background: var(--danger-soft) !important;
+      border-color: var(--danger-border) !important;
+      color: var(--danger-text) !important;
+    }
+
+    #fileList button[data-action="remove"] {
+      background: var(--danger-soft) !important;
+      border-color: var(--danger-border) !important;
+      color: var(--danger-text) !important;
+    }
+
+    html[data-theme="light"] #previewPanel .border-slate-800,
+    html[data-theme="light"] #fileList .border-slate-800 {
+      border-color: #cbd5e1 !important;
+    }
+
+    html[data-theme="light"] #previewPanel .border-b,
+    html[data-theme="light"] #fileList .border-b {
+      border-color: #cbd5e1 !important;
+    }
+
+    html[data-theme="light"] #previewPanel .text-slate-500 {
+      color: #64748b !important;
+    }
+  </style>
+
+</head>
+<body class="min-h-screen bg-slate-950 text-slate-100">
+  <div class="relative overflow-hidden">
+    <div id="themeOverlay" class="absolute inset-0 bg-[radial-gradient(circle_at_top_right,rgba(59,130,246,.18),transparent_25%),radial-gradient(circle_at_left,rgba(16,185,129,.12),transparent_22%),linear-gradient(180deg,#020617, #0f172a)]"></div>
+    <div class="relative mx-auto max-w-7xl px-4 py-8 sm:px-6 lg:px-8">
+      <div class="mb-8 flex flex-col gap-4 lg:flex-row lg:items-end lg:justify-between">
+        <div>
+          <div id="heroBadge" class="inline-flex items-center rounded-full border border-cyan-400/30 bg-cyan-500/10 px-3 py-1 text-xs font-semibold uppercase tracking-[0.2em] text-cyan-300">Ready to Use</div>
+          <h1 id="pageTitle" class="mt-3 text-3xl font-black tracking-tight text-white sm:text-4xl">Konverter Absensi Teks/XLS ke XLSX</h1>
+          <p id="pageSubtitle" class="mt-2 max-w-3xl text-sm text-slate-300 sm:text-base">
+            Upload beberapa file sekaligus. Setiap file akan dikonversi menjadi <span class="font-semibold text-white">sheet berbeda</span> dalam satu file XLSX,
+            dengan tampilan gelap dan blok absensi berwarna seperti contoh yang Bapak lampirkan.
+          </p>
+        </div>
+        <div class="grid grid-cols-1 gap-3 sm:flex">
+          <button id="themeToggle" type="button" class="theme-toggle-btn rounded-2xl px-4 py-3 text-sm font-bold"><span class="inline-flex items-center gap-2"><span id="themeToggleIcon" aria-hidden="true"></span><span id="themeToggleLabel">Dark mode</span></span></button>
+          <button id="btnExport" class="rounded-2xl bg-emerald-500 px-5 py-3 text-sm font-bold text-slate-950 shadow-lg shadow-emerald-500/20 transition hover:bg-emerald-400 disabled:cursor-not-allowed disabled:opacity-40">
+            Download XLSX
+          </button>
+          <button id="btnClearDb" class="rounded-2xl border border-rose-400/30 bg-rose-500/10 px-5 py-3 text-sm font-bold text-rose-200 transition hover:bg-rose-500/20">
+            Hapus Data Lokal
+          </button>
+        </div>
+      </div>
+
+      <div class="grid gap-6 xl:grid-cols-[1.1fr,0.9fr]">
+        <section class="theme-panel rounded-3xl border border-white/10 bg-white/5 p-5 shadow-2xl shadow-black/30 backdrop-blur">
+          <div class="mb-4 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+            <div>
+              <h2 class="theme-title text-xl font-bold text-white">Upload File Sumber</h2>
+              <p class="theme-muted text-sm text-slate-400">Mendukung file hasil export yang berekstensi <b>.XLS</b> namun isinya berupa teks report.</p>
+            </div>
+            <label id="uploadTrigger" class="inline-flex cursor-pointer items-center justify-center rounded-2xl border border-cyan-400/30 bg-cyan-500/10 px-4 py-2 text-sm font-semibold text-cyan-200 transition hover:bg-cyan-500/20">
+              <input id="fileInput" type="file" accept=".xls,.txt" multiple class="hidden" />
+              Pilih File
+            </label>
+          </div>
+
+          <div class="grid gap-4 md:grid-cols-2">
+            <div>
+              <label class="mb-2 block text-sm font-semibold theme-title text-slate-200">Nama file output</label>
+              <input id="outputName" type="text" value="konversi_absensi" class="theme-input w-full rounded-2xl border border-slate-700 bg-slate-900/80 px-4 py-3 text-sm text-white outline-none ring-0 placeholder:text-slate-500 focus:border-cyan-400" placeholder="contoh: absensi_maret_2026" />
+            </div>
+            <div>
+              <label class="mb-2 block text-sm font-semibold theme-title text-slate-200">Status data lokal</label>
+              <div id="dbStatus" class="theme-input rounded-2xl border border-slate-700 bg-slate-900/80 px-4 py-3 text-sm text-slate-300">Memuat data lokal...</div>
+            </div>
+          </div>
+
+          <div class="theme-card rounded-3xl border border-dashed border-slate-700 bg-slate-900/60 p-5">
+            <div class="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+              <div>
+                <div class="theme-title text-sm font-semibold text-slate-200">Daftar file tersimpan</div>
+                <div class="theme-muted text-xs text-slate-400">File yang sudah diupload disimpan ke LocalStorage.</div>
+              </div>
+              <div id="summaryBadge" class="inline-flex w-max rounded-full border border-emerald-400/30 bg-emerald-500/10 px-3 py-1 text-xs font-bold text-emerald-300">0 file</div>
+            </div>
+            <div id="fileList" class="mt-4 grid gap-3"></div>
+          </div>
+        </section>
+
+        <section class="theme-panel rounded-3xl border border-white/10 bg-white/5 p-5 shadow-2xl shadow-black/30 backdrop-blur">
+          <div class="mb-4 flex items-center justify-between">
+            <div>
+              <h2 class="theme-title text-xl font-bold text-white">Preview Struktur Sheet</h2>
+              <p class="theme-muted text-sm text-slate-400">Menampilkan ringkasan hasil parse sebelum diexport ke XLSX.</p>
+            </div>
+          </div>
+          <div id="previewPanel" class="space-y-4"></div>
+        </section>
+      </div>
+    </div>
+  </div>
+
+<script>
+(() => {
+  'use strict';
+
+  const DB_NAME = 'absensi-konverter-db';
+  const DB_VERSION = 1;
+  const STORE_FILES = 'files';
+
+  const fileInput = document.getElementById('fileInput');
+  const fileList = document.getElementById('fileList');
+  const previewPanel = document.getElementById('previewPanel');
+  const btnExport = document.getElementById('btnExport');
+  const btnClearDb = document.getElementById('btnClearDb');
+  const summaryBadge = document.getElementById('summaryBadge');
+  const outputName = document.getElementById('outputName');
+  const dbStatus = document.getElementById('dbStatus');
+  const themeToggle = document.getElementById('themeToggle');
+  const themeToggleLabel = document.getElementById('themeToggleLabel');
+  const themeToggleIcon = document.getElementById('themeToggleIcon');
+
+  const THEME_KEY = 'absensi-konverter-theme';
+  const THEMES = { LIGHT: 'light', DARK: 'dark' };
+
+  const state = {
+    db: null,
+    files: []
+  };
+
+  function getSavedTheme() {
+    try {
+      const saved = localStorage.getItem(THEME_KEY);
+      return saved === THEMES.DARK ? THEMES.DARK : THEMES.LIGHT;
+    } catch (_) {
+      return THEMES.LIGHT;
+    }
+  }
+
+  function getThemeIcon(theme) {
+    if (theme === THEMES.DARK) {
+      return '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 3v2.5M12 18.5V21M4.93 4.93l1.77 1.77M17.3 17.3l1.77 1.77M3 12h2.5M18.5 12H21M4.93 19.07l1.77-1.77M17.3 6.7l1.77-1.77M12 16a4 4 0 1 0 0-8 4 4 0 0 0 0 8Z"/></svg>';
+    }
+    return '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 12.79A9 9 0 1 1 11.21 3c-.02.27-.03.54-.03.81A7 7 0 0 0 20.19 12c.27 0 .54-.01.81-.03Z"/></svg>';
+  }
+
+  function applyTheme(theme, persist = true) {
+    const nextTheme = theme === THEMES.DARK ? THEMES.DARK : THEMES.LIGHT;
+    document.documentElement.setAttribute('data-theme', nextTheme);
+    themeToggleLabel.textContent = nextTheme === THEMES.DARK ? 'Light mode' : 'Dark mode';
+    themeToggleIcon.innerHTML = getThemeIcon(nextTheme);
+    if (persist) {
+      try { localStorage.setItem(THEME_KEY, nextTheme); } catch (_) {}
+    }
+  }
+
+  function toggleTheme() {
+    const current = document.documentElement.getAttribute('data-theme') || THEMES.LIGHT;
+    applyTheme(current === THEMES.DARK ? THEMES.LIGHT : THEMES.DARK);
+  }
+
+  function openDb() {
+    return new Promise((resolve, reject) => {
+      const request = indexedDB.open(DB_NAME, DB_VERSION);
+      request.onupgradeneeded = (event) => {
+        const db = event.target.result;
+        if (!db.objectStoreNames.contains(STORE_FILES)) {
+          const store = db.createObjectStore(STORE_FILES, { keyPath: 'id' });
+          store.createIndex('by_filename', 'filename', { unique: false });
+          store.createIndex('by_savedAt', 'savedAt', { unique: false });
+        }
+      };
+      request.onsuccess = () => resolve(request.result);
+      request.onerror = () => reject(request.error || new Error('Gagal membuka IndexedDB'));
+    });
+  }
+
+  function tx(storeName, mode = 'readonly') {
+    const transaction = state.db.transaction(storeName, mode);
+    return transaction.objectStore(storeName);
+  }
+
+  function idbGetAll() {
+    return new Promise((resolve, reject) => {
+      const request = tx(STORE_FILES).getAll();
+      request.onsuccess = () => resolve(request.result || []);
+      request.onerror = () => reject(request.error || new Error('Gagal membaca data lokal'));
+    });
+  }
+
+  function idbPut(record) {
+    return new Promise((resolve, reject) => {
+      const request = tx(STORE_FILES, 'readwrite').put(record);
+      request.onsuccess = () => resolve(request.result);
+      request.onerror = () => reject(request.error || new Error('Gagal menyimpan ke IndexedDB'));
+    });
+  }
+
+  function idbDelete(id) {
+    return new Promise((resolve, reject) => {
+      const request = tx(STORE_FILES, 'readwrite').delete(id);
+      request.onsuccess = () => resolve();
+      request.onerror = () => reject(request.error || new Error('Gagal menghapus file'));
+    });
+  }
+
+  function idbClear() {
+    return new Promise((resolve, reject) => {
+      const request = tx(STORE_FILES, 'readwrite').clear();
+      request.onsuccess = () => resolve();
+      request.onerror = () => reject(request.error || new Error('Gagal mengosongkan data lokal'));
+    });
+  }
+
+  function uid() {
+    return `${Date.now()}_${Math.random().toString(36).slice(2, 10)}`;
+  }
+
+  function escapeHtml(text) {
+    return String(text ?? '')
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;')
+      .replace(/'/g, '&#039;');
+  }
+
+  function sanitizeSheetName(name, usedNames) {
+    let base = String(name || 'Sheet')
+      .replace(/[\\/?*\[\]:]/g, ' ')
+      .replace(/\s+/g, ' ')
+      .trim();
+    if (!base) base = 'Sheet';
+    base = base.slice(0, 31);
+    let finalName = base;
+    let i = 2;
+    while (usedNames.has(finalName.toLowerCase())) {
+      const suffix = ` ${i}`;
+      finalName = `${base.slice(0, 31 - suffix.length)}${suffix}`;
+      i += 1;
+    }
+    usedNames.add(finalName.toLowerCase());
+    return finalName;
+  }
+
+  function readFileAsText(file) {
+    return new Promise((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onload = () => resolve(String(reader.result || ''));
+      reader.onerror = () => reject(reader.error || new Error(`Gagal membaca ${file.name}`));
+      reader.readAsText(file, 'utf-8');
+    });
+  }
+
+  function parseMeta(lines) {
+    const meta = {
+      perkebunan: '',
+      region: '',
+      pt: '',
+      unit: '',
+      periode: ''
+    };
+
+    for (const line of lines.slice(0, 20)) {
+      const clean = line.replace(/\t/g, ' ').replace(/\s+/g, ' ').trim();
+      if (!clean) continue;
+      if (clean.startsWith('Perkebunan')) meta.perkebunan = clean.replace(/^Perkebunan\s*/, '').trim();
+      else if (clean.startsWith('Region')) meta.region = clean.replace(/^Region\s*/, '').trim();
+      else if (/^PT\s/.test(clean)) meta.pt = clean.replace(/^PT\s*/, '').trim();
+      else if (clean.startsWith('Unit')) meta.unit = clean.replace(/^Unit\s*/, '').trim();
+      else if (clean.startsWith('Periode')) meta.periode = clean.replace(/^Periode\s*/, '').trim();
+    }
+    return meta;
+  }
+
+  function parseDate(dateStr) {
+    const m = String(dateStr).match(/^(\d{2})\.(\d{2})\.(\d{4})$/);
+    if (!m) return null;
+    const [, dd, mm, yyyy] = m;
+    return new Date(Number(yyyy), Number(mm) - 1, Number(dd));
+  }
+
+  function pad2(n) {
+    return String(n).padStart(2, '0');
+  }
+
+  function formatISODate(date) {
+    return `${date.getFullYear()}-${pad2(date.getMonth() + 1)}-${pad2(date.getDate())}`;
+  }
+
+  function monthKeyFromDate(date) {
+    return `${date.getFullYear()}-${pad2(date.getMonth() + 1)}`;
+  }
+
+  function parsePeriodRange(periodText) {
+    const m = String(periodText).match(/(\d{2})\/(\d{2})\/(\d{4})\s+s\/d\s+(\d{2})\/(\d{2})\/(\d{4})/i);
+    if (!m) return null;
+    const [, d1, m1, y1, d2, m2, y2] = m;
+    return {
+      start: new Date(Number(y1), Number(m1) - 1, Number(d1)),
+      end: new Date(Number(y2), Number(m2) - 1, Number(d2))
+    };
+  }
+
+  function parseReport(text, filename) {
+    const normalized = String(text || '').replace(/\r/g, '');
+    const lines = normalized.split('\n');
+    const meta = parseMeta(lines);
+
+    const rowRegex = /^\s*(\d{2})\s+([A-Za-z0-9]+)\s+(.+?)\s+(\d{2}\.\d{2}\.\d{4})\s+([A-Z])\s+([0-9.,]+)\s*$/;
+    const records = [];
+
+    for (const line of lines) {
+      const match = line.match(rowRegex);
+      if (!match) continue;
+      const [, divisi, nik, nama, tanggal, tipe, hk] = match;
+      const dateObj = parseDate(tanggal);
+      if (!dateObj) continue;
+      records.push({
+        divisi: divisi.trim(),
+        nik: nik.trim(),
+        nama: nama.trim(),
+        tanggal,
+        tanggalISO: formatISODate(dateObj),
+        day: dateObj.getDate(),
+        monthKey: monthKeyFromDate(dateObj),
+        tipe: tipe.trim(),
+        hk: Number(String(hk).replace('.', '').replace(',', '.')) || 0
+      });
+    }
+
+    if (!records.length) {
+      throw new Error(`Format file ${filename} tidak terbaca. Pastikan file berisi report absensi teks seperti contoh.`);
+    }
+
+    const monthSet = [...new Set(records.map(r => r.monthKey))].sort();
+    const monthKey = monthSet[0];
+    const period = parsePeriodRange(meta.periode);
+
+    const workersMap = new Map();
+    const typeSet = new Set();
+
+    for (const record of records) {
+      if (!workersMap.has(record.nik)) {
+        workersMap.set(record.nik, {
+          divisi: record.divisi,
+          nik: record.nik,
+          nama: record.nama,
+          dates: {}
+        });
+      }
+      const worker = workersMap.get(record.nik);
+      worker.dates[record.day] = record.tipe;
+      typeSet.add(record.tipe);
+    }
+
+    const workers = [...workersMap.values()].sort((a, b) => {
+      const d = a.divisi.localeCompare(b.divisi, 'id');
+      if (d !== 0) return d;
+      return a.nama.localeCompare(b.nama, 'id');
+    });
+
+    const maxDay = period && period.start && period.end && monthKeyFromDate(period.start) === monthKeyFromDate(period.end)
+      ? period.end.getDate()
+      : Math.max(...records.map(r => r.day));
+    const dayColumns = Array.from({ length: maxDay }, (_, i) => i + 1);
+
+    const summaryByType = {};
+    for (const t of typeSet) summaryByType[t] = records.filter(r => r.tipe === t).length;
+
+    return {
+      meta,
+      filename,
+      monthKey,
+      workers,
+      records,
+      dayColumns,
+      summary: {
+        totalRecords: records.length,
+        totalWorkers: workers.length,
+        totalDivisi: new Set(records.map(r => r.divisi)).size,
+        types: summaryByType
+      }
+    };
+  }
+
+  function prettyDate(isoMonth) {
+    const [y, m] = String(isoMonth).split('-').map(Number);
+    const dt = new Date(y, (m || 1) - 1, 1);
+    return dt.toLocaleDateString('id-ID', { month: 'long', year: 'numeric' });
+  }
+
+  function currentTheme() {
+    return document.documentElement.getAttribute('data-theme') === THEMES.DARK ? THEMES.DARK : THEMES.LIGHT;
+  }
+
+  function typeBadgeClass(type) {
+    const isDark = currentTheme() === THEMES.DARK;
+    const darkMap = {
+      M: 'bg-red-500/20 text-red-200 border-red-400/30',
+      K: 'bg-emerald-500/20 text-emerald-200 border-emerald-400/30',
+      O: 'bg-amber-500/20 text-amber-200 border-amber-400/30'
+    };
+    const lightMap = {
+      M: 'bg-rose-50 text-rose-700 border-rose-200',
+      K: 'bg-emerald-50 text-emerald-700 border-emerald-200',
+      O: 'bg-amber-50 text-amber-700 border-amber-200'
+    };
+    const map = isDark ? darkMap : lightMap;
+    return map[type] || (isDark ? 'bg-slate-500/20 text-slate-200 border-slate-400/30' : 'bg-slate-100 text-slate-700 border-slate-300');
+  }
+
+  function renderFileList() {
+    summaryBadge.textContent = `${state.files.length} file`;
+    fileList.innerHTML = state.files.length ? '' : `
+      <div class="theme-empty rounded-2xl border border-slate-800 bg-slate-950/70 px-4 py-6 text-center text-sm text-slate-400">
+        Belum ada file yang diupload.
+      </div>`;
+
+    state.files.forEach(item => {
+      const el = document.createElement('div');
+      el.className = 'theme-card rounded-2xl border border-slate-800 bg-slate-950/70 p-4';
+      el.innerHTML = `
+        <div class="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
+          <div class="min-w-0">
+            <div class="truncate text-sm font-bold text-white theme-title">${escapeHtml(item.filename)}</div>
+            <div class="mt-1 text-xs text-slate-400 theme-muted">${escapeHtml(item.meta.unit || '-')} • ${escapeHtml(item.meta.periode || '-')}</div>
+            <div class="mt-3 flex flex-wrap gap-2 text-xs">
+              <span class="theme-card-soft rounded-full border border-slate-700 bg-slate-900 px-3 py-1 text-slate-200">Pekerja: ${item.summary.totalWorkers}</span>
+              <span class="theme-card-soft rounded-full border border-slate-700 bg-slate-900 px-3 py-1 text-slate-200">Record: ${item.summary.totalRecords}</span>
+              <span class="theme-card-soft rounded-full border border-slate-700 bg-slate-900 px-3 py-1 text-slate-200">Bulan: ${escapeHtml(prettyDate(item.monthKey))}</span>
+            </div>
+          </div>
+          <div class="flex gap-2">
+            <button data-action="remove" data-id="${item.id}" class="rounded-xl border border-rose-400/30 bg-rose-500/10 px-3 py-2 text-xs font-bold text-rose-200 hover:bg-rose-500/20">Hapus</button>
+          </div>
+        </div>
+      `;
+      fileList.appendChild(el);
+    });
+  }
+
+  function renderPreview() {
+    previewPanel.innerHTML = state.files.length ? '' : `
+      <div class="theme-empty rounded-2xl border border-slate-800 bg-slate-950/70 px-4 py-8 text-center text-sm text-slate-400">
+        Preview akan muncul setelah file diupload.
+      </div>`;
+
+    state.files.forEach(item => {
+      const legend = Object.entries(item.summary.types)
+        .map(([type, count]) => `<span class="rounded-full border px-3 py-1 ${typeBadgeClass(type)}">${escapeHtml(type)}: ${count}</span>`)
+        .join('');
+
+      const previewDays = Math.min(15, item.dayColumns.length);
+      const sampleWorkers = item.workers.slice(0, 6).map(worker => {
+        const cells = item.dayColumns.slice(0, previewDays).map(day => {
+          const val = worker.dates[day] || '';
+          const cls = val ? typeBadgeClass(val) : (currentTheme() === THEMES.DARK ? 'border-slate-800 bg-slate-950 text-slate-600' : 'border-slate-300 bg-white text-slate-400');
+          return `<div class="flex h-8 w-8 items-center justify-center rounded-lg border text-[11px] font-bold ${cls}">${escapeHtml(val || '')}</div>`;
+        }).join('');
+        return `
+          <div class="theme-card overflow-hidden rounded-2xl border border-slate-800 bg-slate-950/70">
+            <div class="border-b border-slate-800 px-4 py-3">
+              <div class="text-sm font-bold text-white theme-title">${escapeHtml(worker.nama)}</div>
+              <div class="text-xs text-slate-400 theme-muted">Divisi ${escapeHtml(worker.divisi)} • NIK ${escapeHtml(worker.nik)}</div>
+            </div>
+            <div class="p-4">
+              <div class="mb-2 grid gap-1 text-center text-[10px] font-semibold text-slate-500" style="grid-template-columns: repeat(${previewDays}, minmax(0, 1fr));">
+                ${item.dayColumns.slice(0, previewDays).map(day => `<div>${day}</div>`).join('')}
+              </div>
+              <div class="grid gap-1" style="grid-template-columns: repeat(${previewDays}, minmax(0, 1fr));">${cells}</div>
+            </div>
+          </div>
+        `;
+      }).join('');
+
+      const wrap = document.createElement('div');
+      wrap.className = 'theme-card rounded-3xl border border-slate-800 bg-slate-950/70 p-4';
+      wrap.innerHTML = `
+        <div class="mb-4 flex flex-col gap-3 xl:flex-row xl:items-start xl:justify-between">
+          <div>
+            <div class="text-base font-bold text-white theme-title">${escapeHtml(item.filename)}</div>
+            <div class="mt-1 text-xs text-slate-400 theme-muted">${escapeHtml(item.meta.perkebunan || '-')} • ${escapeHtml(item.meta.region || '-')}</div>
+            <div class="text-xs text-slate-400 theme-muted">${escapeHtml(item.meta.pt || '-')} • ${escapeHtml(item.meta.unit || '-')}</div>
+          </div>
+          <div class="flex flex-wrap gap-2 text-xs">${legend}</div>
+        </div>
+        <div class="mb-4 grid gap-3 sm:grid-cols-3">
+          <div class="theme-card-soft rounded-2xl border border-slate-800 bg-slate-900 px-4 py-3"><div class="text-xs text-slate-400 theme-muted">Sheet</div><div class="mt-1 font-bold text-white theme-title">${escapeHtml(item.sheetName || item.filename)}</div></div>
+          <div class="theme-card-soft rounded-2xl border border-slate-800 bg-slate-900 px-4 py-3"><div class="text-xs text-slate-400 theme-muted">Periode</div><div class="mt-1 font-bold text-white theme-title">${escapeHtml(item.meta.periode || '-')}</div></div>
+          <div class="theme-card-soft rounded-2xl border border-slate-800 bg-slate-900 px-4 py-3"><div class="text-xs text-slate-400 theme-muted">Pekerja / Record</div><div class="mt-1 font-bold text-white theme-title">${item.summary.totalWorkers} / ${item.summary.totalRecords}</div></div>
+        </div>
+        <div class="space-y-3">${sampleWorkers || '<div class="text-sm text-slate-400">Tidak ada sample.</div>'}</div>
+      `;
+      previewPanel.appendChild(wrap);
+    });
+  }
+
+  function updateDbStatus() {
+    const total = state.files.length;
+    dbStatus.textContent = total ? `${total} file tersimpan di IndexedDB.` : 'Belum ada data lokal tersimpan.';
+    btnExport.disabled = total === 0;
+  }
+
+  async function refreshFromDb() {
+    const all = await idbGetAll();
+    all.sort((a, b) => (a.savedAt || 0) - (b.savedAt || 0));
+    const usedNames = new Set();
+    state.files = all.map(item => ({ ...item, sheetName: sanitizeSheetName(item.filename.replace(/\.[^.]+$/, ''), usedNames) }));
+    renderFileList();
+    renderPreview();
+    updateDbStatus();
+  }
+
+  async function handleFiles(files) {
+    if (!files || !files.length) return;
+    for (const file of files) {
+      const text = await readFileAsText(file);
+      const parsed = parseReport(text, file.name);
+      await idbPut({
+        id: uid(),
+        filename: file.name,
+        rawText: text,
+        savedAt: Date.now(),
+        ...parsed
+      });
+    }
+    await refreshFromDb();
+  }
+
+  function hexFill(color) {
+    return { type: 'pattern', pattern: 'solid', fgColor: { argb: color.replace('#', '') } };
+  }
+
+  function styleCell(cell, opts = {}) {
+    if (opts.font) cell.font = opts.font;
+    if (opts.alignment) cell.alignment = opts.alignment;
+    if (opts.fill) cell.fill = opts.fill;
+    if (opts.border) cell.border = opts.border;
+    if (opts.numFmt) cell.numFmt = opts.numFmt;
+  }
+
+  function makeBorder(color = '1E293B') {
+    return {
+      top: { style: 'thin', color: { argb: color } },
+      left: { style: 'thin', color: { argb: color } },
+      bottom: { style: 'thin', color: { argb: color } },
+      right: { style: 'thin', color: { argb: color } }
+    };
+  }
+
+  function getTypeStyle(type) {
+    const upper = String(type || '').toUpperCase();
+    const map = {
+      M: { fill: hexFill('FF0000'), fontColor: 'FFFFFFFF' },
+      K: { fill: hexFill('111827'), fontColor: 'FFFFFFFF' },
+      O: { fill: hexFill('16A34A'), fontColor: 'FFFFFFFF' }
+    };
+    return map[upper] || { fill: hexFill('334155'), fontColor: 'FFFFFFFF' };
+  }
+
+  async function exportWorkbook() {
+    if (!state.files.length) {
+      alert('Belum ada file untuk dikonversi.');
+      return;
+    }
+    if (typeof ExcelJS === 'undefined') {
+      alert('Library ExcelJS belum siap. Coba tunggu sebentar lalu klik lagi.');
+      return;
+    }
+
+    btnExport.disabled = true;
+    btnExport.textContent = 'Memproses...';
+
+    try {
+      const workbook = new ExcelJS.Workbook();
+      workbook.creator = 'ChatGPT';
+      workbook.created = new Date();
+      workbook.modified = new Date();
+      workbook.properties.date1904 = false;
+
+      const usedNames = new Set();
+      const summaryWs = workbook.addWorksheet('Ringkasan');
+      summaryWs.views = [{ state: 'frozen', ySplit: 5 }];
+      summaryWs.properties.defaultRowHeight = 20;
+      summaryWs.columns = [
+        { width: 6 }, { width: 28 }, { width: 22 }, { width: 24 }, { width: 24 },
+        { width: 20 }, { width: 14 }, { width: 14 }, { width: 20 }
+      ];
+
+      summaryWs.mergeCells('A1:I1');
+      summaryWs.getCell('A1').value = 'RINGKASAN ABSENSI PEMANEN BARU';
+      styleCell(summaryWs.getCell('A1'), {
+        font: { bold: true, size: 16, color: { argb: 'FFFFFFFF' } },
+        alignment: { horizontal: 'center', vertical: 'middle' },
+        fill: hexFill('0F172A')
+      });
+      summaryWs.getRow(1).height = 26;
+
+      summaryWs.mergeCells('A2:I2');
+      summaryWs.getCell('A2').value = `Dibuat: ${new Date().toLocaleString('id-ID')}`;
+      styleCell(summaryWs.getCell('A2'), {
+        font: { italic: true, color: { argb: 'CBD5E1' } },
+        alignment: { horizontal: 'center' },
+        fill: hexFill('111827')
+      });
+
+      const summaryHeaderRow = 4;
+      const summaryHeaders = ['No', 'Nama File', 'Sheet', 'Unit', 'Periode', 'Bulan', 'Pekerja', 'Record', 'Tipe Absensi'];
+      summaryHeaders.forEach((header, idx) => {
+        const cell = summaryWs.getRow(summaryHeaderRow).getCell(idx + 1);
+        cell.value = header;
+        styleCell(cell, {
+          font: { bold: true, color: { argb: 'FFFFFFFF' } },
+          alignment: { horizontal: 'center', vertical: 'middle' },
+          fill: hexFill('1E293B'),
+          border: makeBorder('334155')
+        });
+      });
+
+      state.files.forEach((item, index) => {
+        const row = summaryWs.getRow(summaryHeaderRow + 1 + index);
+        const summarySheetName = sanitizeSheetName(item.filename.replace(/\.[^.]+$/, ''), usedNames);
+        const typeLabel = Object.entries(item.summary.types).map(([k, v]) => `${k}:${v}`).join(', ');
+        [
+          index + 1, item.filename, summarySheetName, item.meta.unit || '-', item.meta.periode || '-',
+          prettyDate(item.monthKey), item.summary.totalWorkers, item.summary.totalRecords, typeLabel
+        ].forEach((value, i) => {
+          const cell = row.getCell(i + 1);
+          cell.value = value;
+          styleCell(cell, {
+            font: { color: { argb: 'E2E8F0' } },
+            alignment: { vertical: 'middle', horizontal: i === 0 ? 'center' : 'left', wrapText: true },
+            fill: hexFill(index % 2 === 0 ? '0F172A' : '111827'),
+            border: makeBorder('1F2937')
+          });
+        });
+      });
+
+      for (const item of state.files) {
+        const sheetName = sanitizeSheetName(item.filename.replace(/\.[^.]+$/, ''), usedNames);
+        const ws = workbook.addWorksheet(sheetName);
+        ws.views = [{ state: 'frozen', xSplit: 3, ySplit: 8 }];
+        ws.properties.defaultRowHeight = 22;
+        ws.columns = [{ width: 8 }, { width: 18 }, { width: 28 }, ...item.dayColumns.map(() => ({ width: 5 }))];
+
+        ws.mergeCells(1, 1, 1, 3 + item.dayColumns.length);
+        ws.getCell(1, 1).value = `ABSENSI PEMANEN BARU - ${item.meta.unit || item.filename}`;
+        styleCell(ws.getCell(1, 1), {
+          font: { bold: true, size: 16, color: { argb: 'FFFFFFFF' } },
+          alignment: { horizontal: 'center', vertical: 'middle' },
+          fill: hexFill('020617')
+        });
+        ws.getRow(1).height = 26;
+
+        const metaRows = [
+          ['Perkebunan', item.meta.perkebunan || '-'],
+          ['Region', item.meta.region || '-'],
+          ['PT', item.meta.pt || '-'],
+          ['Unit', item.meta.unit || '-'],
+          ['Periode', item.meta.periode || '-'],
+          ['Bulan', prettyDate(item.monthKey)]
+        ];
+
+        metaRows.forEach((meta, i) => {
+          const rowNo = 2 + i;
+          ws.getCell(rowNo, 1).value = meta[0];
+          ws.getCell(rowNo, 2).value = meta[1];
+          ws.mergeCells(rowNo, 2, rowNo, 3 + item.dayColumns.length);
+          styleCell(ws.getCell(rowNo, 1), {
+            font: { bold: true, color: { argb: '93C5FD' } },
+            fill: hexFill('0F172A'),
+            border: makeBorder('1E293B')
+          });
+          styleCell(ws.getCell(rowNo, 2), {
+            font: { color: { argb: 'E5E7EB' } },
+            fill: hexFill('0F172A'),
+            border: makeBorder('1E293B')
+          });
+        });
+
+        const headerRowNo = 8;
+        const headerRow = ws.getRow(headerRowNo);
+        ['Div', 'NIK', 'Nama', ...item.dayColumns].forEach((value, idx) => {
+          const cell = headerRow.getCell(idx + 1);
+          cell.value = value;
+          styleCell(cell, {
+            font: { bold: true, color: { argb: 'FFFFFFFF' } },
+            alignment: { horizontal: 'center', vertical: 'middle' },
+            fill: hexFill('111827'),
+            border: makeBorder('334155')
+          });
+        });
+        headerRow.height = 24;
+
+        item.workers.forEach((worker, idx) => {
+          const rowNo = headerRowNo + 1 + idx;
+          const row = ws.getRow(rowNo);
+          [worker.divisi, worker.nik, worker.nama].forEach((value, c) => {
+            const cell = row.getCell(c + 1);
+            cell.value = value;
+            styleCell(cell, {
+              font: { color: { argb: 'E2E8F0' }, bold: c < 2 },
+              alignment: { vertical: 'middle', horizontal: c === 0 ? 'center' : 'left' },
+              fill: hexFill(idx % 2 === 0 ? '020617' : '0B1120'),
+              border: makeBorder('1E293B')
+            });
+          });
+
+          item.dayColumns.forEach((day, dayIdx) => {
+            const cell = row.getCell(4 + dayIdx);
+            const type = worker.dates[day] || '';
+            cell.value = type;
+            const typeStyle = type ? getTypeStyle(type) : { fill: hexFill(idx % 2 === 0 ? '020617' : '0B1120'), fontColor: '475569' };
+            styleCell(cell, {
+              font: { bold: true, color: { argb: typeStyle.fontColor } },
+              alignment: { horizontal: 'center', vertical: 'middle' },
+              fill: typeStyle.fill,
+              border: makeBorder('1E293B')
+            });
+          });
+        });
+
+        const legendStart = headerRowNo + item.workers.length + 3;
+
+        ws.getCell(legendStart, 1).value = 'Legenda';
+        styleCell(ws.getCell(legendStart, 1), {
+          font: { bold: true, color: { argb: 'F8FAFC' } },
+          fill: hexFill('111827'),
+          border: makeBorder('334155')
+        });
+
+        let legendRow = legendStart + 1;
+
+        Object.keys(item.summary.types).sort().forEach(type => {
+
+          const c1 = ws.getCell(legendRow, 1);
+          const c2 = ws.getCell(legendRow, 2);
+
+          c1.value = type;
+          c2.value = item.summary.types[type];
+
+          const typeStyle = getTypeStyle(type);
+
+          styleCell(c1, {
+            font: { bold: true, color: { argb: typeStyle.fontColor } },
+            alignment: { horizontal: 'center' },
+            fill: typeStyle.fill,
+            border: makeBorder('334155')
+          });
+
+          styleCell(c2, {
+            font: { color: { argb: 'E2E8F0' } },
+            fill: hexFill('0F172A'),
+            border: makeBorder('334155')
+          });
+
+          legendRow++; // turun ke baris berikutnya
+        });
+      }
+
+      const buffer = await workbook.xlsx.writeBuffer();
+      const blob = new Blob([buffer], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' });
+      const safeName = (outputName.value || 'konversi_absensi').trim().replace(/[^a-zA-Z0-9_-]+/g, '_') || 'konversi_absensi';
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `${safeName}.xlsx`;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      setTimeout(() => URL.revokeObjectURL(url), 1000);
+    } catch (error) {
+      console.error(error);
+      alert(error.message || 'Gagal membuat file XLSX.');
+    } finally {
+      btnExport.disabled = state.files.length === 0;
+      btnExport.textContent = 'Download XLSX';
+    }
+  }
+
+  fileList.addEventListener('click', async (event) => {
+    const btn = event.target.closest('button[data-action="remove"]');
+    if (!btn) return;
+    const { id } = btn.dataset;
+    if (!id) return;
+    await idbDelete(id);
+    await refreshFromDb();
+  });
+
+  fileInput.addEventListener('change', async (event) => {
+    const files = [...(event.target.files || [])];
+    if (!files.length) return;
+    try {
+      await handleFiles(files);
+    } catch (error) {
+      console.error(error);
+      alert(error.message || 'Ada file yang gagal diproses.');
+    } finally {
+      fileInput.value = '';
+    }
+  });
+
+  btnExport.addEventListener('click', exportWorkbook);
+  themeToggle.addEventListener('click', toggleTheme);
+
+  btnClearDb.addEventListener('click', async () => {
+    const ok = confirm('Yakin ingin menghapus semua data lokal di IndexedDB?');
+    if (!ok) return;
+    await idbClear();
+    await refreshFromDb();
+  });
+
+  async function boot() {
+    applyTheme(getSavedTheme(), false);
+    try {
+      state.db = await openDb();
+      await refreshFromDb();
+    } catch (error) {
+      console.error(error);
+      dbStatus.textContent = 'IndexedDB gagal dibuka.';
+      alert('Aplikasi tidak bisa membuka IndexedDB. Silakan coba di browser modern seperti Chrome/Edge/Firefox terbaru.');
+    }
+  }
+
+  boot();
+})();
+</script>
+</body>
+</html>

@@ -1,0 +1,213 @@
+<!DOCTYPE html>
+<html lang="id">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Konversi Skoring Premi Panen</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script src="https://cdn.jsdelivr.net/npm/exceljs@4.4.0/dist/exceljs.min.js"></script>
+  <style>
+    html, body { height: 100%; }
+    .glass { backdrop-filter: blur(12px); background: rgba(255,255,255,.78); }
+    .hidden-force { display: none !important; }
+    .score-5 { background:#166534; color:#fff; }
+    .score-4 { background:#16a34a; color:#fff; }
+    .score-3 { background:#eab308; color:#111827; }
+    .score-2 { background:#f97316; color:#fff; }
+    .score-1, .score-0 { background:#dc2626; color:#fff; }
+  </style>
+</head>
+<body class="min-h-screen bg-slate-100 text-slate-800">
+  <div id="loadingOverlay" class="hidden-force fixed inset-0 z-50 bg-slate-950/60 items-center justify-center">
+    <div class="glass rounded-2xl shadow-2xl px-6 py-5 w-[92%] max-w-md border border-white/50">
+      <div class="flex items-center gap-4">
+        <div class="w-10 h-10 rounded-full border-4 border-slate-300 border-t-blue-600 animate-spin"></div>
+        <div>
+          <div class="font-semibold text-lg">Sedang memproses data…</div>
+          <div id="loadingText" class="text-sm text-slate-600 mt-1">Mohon tunggu sebentar.</div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="max-w-7xl mx-auto p-4 md:p-6">
+    <div class="rounded-3xl bg-gradient-to-r from-slate-900 via-blue-900 to-slate-900 text-white p-6 shadow-xl">
+      <div class="flex flex-col lg:flex-row lg:items-end lg:justify-between gap-4">
+        <div>
+          <h1 class="text-2xl md:text-3xl font-bold">Konversi Skoring Produktivitas & Absensi Premi Panen</h1>
+          <p class="text-slate-200 mt-2 max-w-3xl">Upload 1 atau beberapa file BHP/Premi Panen, hitung skor per tenaga kerja per tanggal, simpan data lokal di IndexedDB, filter per bulan/tanggal, lalu download hasilnya ke Excel (.xlsx).</p>
+        </div>
+        <div class="text-sm bg-white/10 rounded-2xl px-4 py-3 border border-white/10">
+          <div><span class="font-semibold">Aturan Produktivitas</span></div>
+          <div>&gt;110% basis = 5</div>
+          <div>100–110% = 4</div>
+          <div>90–99% = 3</div>
+          <div>75–89% = 2</div>
+          <div>&lt;75% = 1</div>
+        </div>
+      </div>
+    </div>
+
+    <div class="grid xl:grid-cols-12 gap-5 mt-5">
+      <div class="xl:col-span-4 space-y-5">
+        <div class="bg-white rounded-3xl shadow-sm border border-slate-200 p-5">
+          <h2 class="text-lg font-bold mb-4">1. Upload File</h2>
+          <label class="block border-2 border-dashed border-blue-300 rounded-2xl p-5 text-center hover:bg-blue-50 transition cursor-pointer">
+            <input id="fileInput" type="file" class="hidden" multiple accept=".xls,.xlsx,.txt" />
+            <div class="text-base font-semibold text-blue-700">Pilih file premi panen</div>
+            <div class="text-sm text-slate-500 mt-1">Bisa upload banyak file sekaligus</div>
+          </label>
+          <div class="mt-4 flex flex-wrap gap-2">
+            <button id="btnProcess" class="px-4 py-2.5 rounded-xl bg-blue-600 hover:bg-blue-700 text-white font-semibold shadow">Proses File</button>
+            <button id="btnDownload" class="px-4 py-2.5 rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white font-semibold shadow disabled:opacity-50 disabled:cursor-not-allowed" disabled>Download XLSX</button>
+            <button id="btnClear" class="px-4 py-2.5 rounded-xl bg-rose-600 hover:bg-rose-700 text-white font-semibold shadow">Hapus Data Lokal</button>
+          </div>
+          <div class="mt-4 text-sm text-slate-500" id="selectedInfo">Belum ada file dipilih.</div>
+          <div id="fileList" class="mt-3 space-y-2"></div>
+        </div>
+
+        <div class="bg-white rounded-3xl shadow-sm border border-slate-200 p-5">
+          <h2 class="text-lg font-bold mb-4">2. Filter Data</h2>
+          <div class="grid md:grid-cols-2 gap-3">
+            <div>
+              <label class="text-sm font-medium text-slate-600">Bulan</label>
+              <select id="monthFilter" class="mt-1 w-full rounded-xl border-slate-300 focus:border-blue-500 focus:ring-blue-500">
+                <option value="">Semua Bulan</option>
+              </select>
+            </div>
+            <div>
+              <label class="text-sm font-medium text-slate-600">Unit/File</label>
+              <select id="unitFilter" class="mt-1 w-full rounded-xl border-slate-300 focus:border-blue-500 focus:ring-blue-500">
+                <option value="">Semua Unit</option>
+              </select>
+            </div>
+            <div>
+              <label class="text-sm font-medium text-slate-600">Tanggal Mulai</label>
+              <input id="dateFrom" type="date" class="mt-1 w-full rounded-xl border-slate-300 focus:border-blue-500 focus:ring-blue-500" />
+            </div>
+            <div>
+              <label class="text-sm font-medium text-slate-600">Tanggal Selesai</label>
+              <input id="dateTo" type="date" class="mt-1 w-full rounded-xl border-slate-300 focus:border-blue-500 focus:ring-blue-500" />
+            </div>
+          </div>
+          <div class="mt-3 flex gap-2">
+            <button id="btnApplyFilter" class="px-4 py-2 rounded-xl bg-slate-900 hover:bg-slate-800 text-white font-semibold">Terapkan Filter</button>
+            <button id="btnResetFilter" class="px-4 py-2 rounded-xl bg-slate-200 hover:bg-slate-300 text-slate-800 font-semibold">Reset</button>
+          </div>
+          <p class="text-xs text-slate-500 mt-3">Absensi = 5 bila ada data pada tanggal tersebut, 0 bila tidak ada data dalam rentang tanggal yang dibentuk dari tanggal terendah hingga tertinggi tiap file/unit.</p>
+        </div>
+
+        <div class="bg-white rounded-3xl shadow-sm border border-slate-200 p-5">
+          <h2 class="text-lg font-bold mb-4">3. Ringkasan</h2>
+          <div class="grid grid-cols-2 gap-3">
+            <div class="rounded-2xl bg-slate-50 p-4 border border-slate-200">
+              <div class="text-sm text-slate-500">File aktif</div>
+              <div id="statFiles" class="text-2xl font-bold mt-1">0</div>
+            </div>
+            <div class="rounded-2xl bg-slate-50 p-4 border border-slate-200">
+              <div class="text-sm text-slate-500">Tenaga kerja</div>
+              <div id="statWorkers" class="text-2xl font-bold mt-1">0</div>
+            </div>
+            <div class="rounded-2xl bg-slate-50 p-4 border border-slate-200">
+              <div class="text-sm text-slate-500">Baris harian</div>
+              <div id="statRows" class="text-2xl font-bold mt-1">0</div>
+            </div>
+            <div class="rounded-2xl bg-slate-50 p-4 border border-slate-200">
+              <div class="text-sm text-slate-500">Rata² skor produktivitas</div>
+              <div id="statProd" class="text-2xl font-bold mt-1">0.00</div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div class="xl:col-span-8 space-y-5">
+        <div class="bg-white rounded-3xl shadow-sm border border-slate-200 p-5">
+          <div class="flex flex-col md:flex-row md:items-center md:justify-between gap-3 mb-4">
+            <div>
+              <h2 class="text-lg font-bold">Preview Data Harian</h2>
+              <p class="text-sm text-slate-500">Tabel ini menampilkan hasil per tenaga kerja per tanggal.</p>
+            </div>
+            <input id="searchInput" type="text" placeholder="Cari nama / NIP / unit..." class="w-full md:w-80 rounded-xl border-slate-300 focus:border-blue-500 focus:ring-blue-500" />
+          </div>
+          <div class="overflow-auto rounded-2xl border border-slate-200">
+            <table class="min-w-full text-sm">
+              <thead class="bg-slate-100">
+                <tr class="text-slate-700">
+                  <th class="px-3 py-2 text-left">Unit</th>
+                  <th class="px-3 py-2 text-left">Tanggal</th>
+                  <th class="px-3 py-2 text-left">NIP</th>
+                  <th class="px-3 py-2 text-left">Nama</th>
+                  <th class="px-3 py-2 text-right">Qty</th>
+                  <th class="px-3 py-2 text-right">Basis Prorata</th>
+                  <th class="px-3 py-2 text-right">% Basis</th>
+                  <th class="px-3 py-2 text-center">Skor Prod.</th>
+                  <th class="px-3 py-2 text-center">Skor Abs.</th>
+                </tr>
+              </thead>
+              <tbody id="previewBody"></tbody>
+            </table>
+          </div>
+          <div id="previewFoot" class="text-xs text-slate-500 mt-3"></div>
+        </div>
+
+        <div class="grid md:grid-cols-2 gap-5">
+          <div class="bg-white rounded-3xl shadow-sm border border-slate-200 p-5">
+            <h2 class="text-lg font-bold mb-4">Rekap per Unit</h2>
+            <div class="overflow-auto rounded-2xl border border-slate-200">
+              <table class="min-w-full text-sm">
+                <thead class="bg-slate-100">
+                  <tr>
+                    <th class="px-3 py-2 text-left">Unit</th>
+                    <th class="px-3 py-2 text-right">HK</th>
+                    <th class="px-3 py-2 text-right">Pekerja</th>
+                    <th class="px-3 py-2 text-right">Avg Prod</th>
+                    <th class="px-3 py-2 text-right">Avg Abs</th>
+                  </tr>
+                </thead>
+                <tbody id="unitBody"></tbody>
+              </table>
+            </div>
+          </div>
+          <div class="bg-white rounded-3xl shadow-sm border border-slate-200 p-5">
+            <h2 class="text-lg font-bold mb-4">Rekap per Tenaga Kerja</h2>
+            <div class="overflow-auto rounded-2xl border border-slate-200 max-h-[360px]">
+              <table class="min-w-full text-sm">
+                <thead class="bg-slate-100 sticky top-0">
+                  <tr>
+                    <th class="px-3 py-2 text-left">Unit</th>
+                    <th class="px-3 py-2 text-left">NIP</th>
+                    <th class="px-3 py-2 text-left">Nama</th>
+                    <th class="px-3 py-2 text-right">HK</th>
+                    <th class="px-3 py-2 text-right">Avg Prod</th>
+                    <th class="px-3 py-2 text-right">Avg Abs</th>
+                  </tr>
+                </thead>
+                <tbody id="workerBody"></tbody>
+              </table>
+            </div>
+          </div>
+        </div>
+
+        <div class="bg-white rounded-3xl shadow-sm border border-slate-200 p-5">
+          <div class="mb-4">
+            <h2 class="text-lg font-bold">Matrik Skor Produktivitas per Unit</h2>
+            <p class="text-sm text-slate-500">Tampilan matrik harian per pekerja. Header tanggal mengikuti filter aktif.</p>
+          </div>
+          <div id="matrixProdWrap" class="space-y-5"></div>
+        </div>
+
+        <div class="bg-white rounded-3xl shadow-sm border border-slate-200 p-5">
+          <div class="mb-4">
+            <h2 class="text-lg font-bold">Matrik Skor Kehadiran per Unit</h2>
+            <p class="text-sm text-slate-500">Skor 5 = hadir, skor 0 = tidak hadir dalam rentang tanggal yang terbentuk.</p>
+          </div>
+          <div id="matrixAbsWrap" class="space-y-5"></div>
+        </div>
+
+      </div>
+    </div>
+  </div>
+
+  <script src="./app.js"></script>
+</body>
+</html>
