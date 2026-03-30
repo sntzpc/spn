@@ -8,7 +8,6 @@
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
   <link rel="stylesheet" href="./styles.css" />
-  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.2/dist/chart.umd.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/jspdf@2.5.1/dist/jspdf.umd.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/jspdf-autotable@3.8.2/dist/jspdf.plugin.autotable.min.js"></script>
@@ -48,7 +47,7 @@
       <button class="tab auth-only" data-tab="laporan" type="button">Laporan</button>
       <button class="tab auth-only" data-tab="rekap" type="button">Rekap & WA</button>
       <button class="tab auth-only" data-tab="database" type="button">Database</button>
-      <button class="tab auth-only admin-only" data-tab="pengaturan" type="button">Pengaturan</button>
+      <button class="tab auth-only" data-tab="pengaturan" type="button">Pengaturan</button>
     </nav>
 
     <main>
@@ -78,20 +77,36 @@
           </div>
         </div>
 
-        <div class="grid cols-2">
-          <div class="card chart-card">
-            <div class="card-title">Tren Laporan 7 Hari</div>
-            <canvas id="chartReports"></canvas>
+
+        <div class="grid cols-2 admin-kpi" id="adminKpiWrap">
+          <div class="card">
+            <div class="card-title">Dashboard KPI Management</div>
+            <div class="stats-grid">
+              <div class="stat-box"><span>Estate Aktif</span><strong id="kpiEstateCount">0</strong></div>
+              <div class="stat-box"><span>Divisi Aktif</span><strong id="kpiDivisiCount">0</strong></div>
+              <div class="stat-box"><span>Rata-rata Hadir/Laporan</span><strong id="kpiAvgHadir">0</strong></div>
+              <div class="stat-box"><span>Rasio Tidak Hadir</span><strong id="kpiAbsenceRate">0%</strong></div>
+            </div>
+            <div class="info-list" id="kpiManagementList"></div>
           </div>
-          <div class="card chart-card">
-            <div class="card-title">Hadir vs Tidak Hadir per Divisi</div>
-            <canvas id="chartAttendance"></canvas>
+          <div class="card">
+            <div class="card-title">Peringkat Estate / Divisi</div>
+            <div id="kpiRankingList" class="list-wrap"></div>
           </div>
         </div>
 
-        <div class="card chart-card">
-          <div class="card-title">Distribusi Laporan per Estate</div>
-          <canvas id="chartEstate"></canvas>
+        <div class="card" id="monthlyWrap">
+          <div class="card-title">Rekap Bulanan per Estate / Divisi</div>
+          <div class="grid cols-3">
+            <div class="field"><label for="monthlyMonth">Bulan</label><input id="monthlyMonth" type="month" /></div>
+            <div class="field"><label for="monthlyEstate">Estate</label><input id="monthlyEstate" type="text" placeholder="Kosong = semua scope" /></div>
+            <div class="field"><label for="monthlyDivisi">Divisi</label><input id="monthlyDivisi" type="text" placeholder="Contoh 3" /></div>
+          </div>
+          <div class="actions">
+            <button class="btn accent" id="btnGenerateMonthly" type="button">Generate Rekap Bulanan</button>
+            <button class="btn secondary" id="btnCopyMonthly" type="button">Copy Rekap</button>
+          </div>
+          <textarea id="monthlyPreview" rows="12" readonly></textarea>
         </div>
 
         <div class="card">
@@ -112,8 +127,8 @@
                   <option value="MANDOR">MANDOR</option>
                   <option value="ASISTEN">ASISTEN</option>
                   <option value="MANAGER">MANAGER</option>
-                  <option value="TC_HEAD">TC_HEAD</option>
                   <option value="ADMIN">ADMIN</option>
+                  <option value="TC_HEAD">TC_HEAD</option>
                 </select>
               </div>
               <div class="field"><label for="userEstate">Estate</label><input id="userEstate" type="text" placeholder="BTUE" /></div>
@@ -202,7 +217,6 @@
       <section class="tab-panel" id="laporan">
         <div class="card" id="formCard">
           <div class="card-title">Form Laporan Harian Mandor</div>
-          <input id="editReportId" type="hidden" />
           <div class="grid cols-2">
             <div class="field"><label for="tanggal">Tanggal</label><input id="tanggal" type="date" /></div>
             <div class="field"><label for="hariTeks">Hari</label><input id="hariTeks" type="text" readonly /></div>
@@ -246,7 +260,8 @@
               <select id="rekapRole">
                 <option value="ASISTEN">ASISTEN</option>
                 <option value="MANAGER">MANAGER</option>
-                <option value="TC_HEAD">TC_HEAD</option>
+                <option value="ADMIN">ADMIN</option>
+                  <option value="TC_HEAD">TC_HEAD</option>
               </select>
             </div>
             <div class="field"><label for="rekapEstate">Filter Estate</label><input id="rekapEstate" type="text" placeholder="otomatis sesuai role" /></div>
@@ -270,27 +285,25 @@
 
       <section class="tab-panel" id="database">
         <div class="card">
-          <div class="card-title">Filter Laporan</div>
-          <div class="grid cols-3 compact-grid">
-            <div class="field"><label for="filterEstate">Estate</label><input id="filterEstate" type="text" placeholder="BTUE" /></div>
-            <div class="field"><label for="filterDivisi">Divisi</label><input id="filterDivisi" type="text" placeholder="3 atau BTUE3" /></div>
-            <div class="field"><label for="filterMandor">Mandor</label><input id="filterMandor" type="text" placeholder="AGUS" /></div>
-            <div class="field"><label for="filterStart">Tanggal Awal</label><input id="filterStart" type="date" /></div>
-            <div class="field"><label for="filterEnd">Tanggal Akhir</label><input id="filterEnd" type="date" /></div>
-            <div class="actions inline-actions align-end">
-              <button class="btn secondary" id="btnApplyFilter" type="button">Terapkan Filter</button>
-              <button class="btn secondary" id="btnClearFilter" type="button">Reset Filter</button>
-            </div>
-          </div>
-        </div>
-
-        <div class="card">
           <div class="card-title">Ringkasan Database Lokal</div>
           <div class="stats-grid">
             <div class="stat-box"><span>Total Data</span><strong id="statTotal">0</strong></div>
             <div class="stat-box"><span>Belum Sync</span><strong id="statUnsyncedDb">0</strong></div>
             <div class="stat-box"><span>Role Aktif</span><strong id="statRole">-</strong></div>
             <div class="stat-box"><span>Scope Aktif</span><strong id="statScope">-</strong></div>
+          </div>
+        </div>
+
+
+        <div class="card">
+          <div class="card-title">Filter Riwayat</div>
+          <div class="grid cols-3">
+            <div class="field"><label for="filterEstate">Estate</label><input id="filterEstate" type="text" placeholder="BTUE" /></div>
+            <div class="field"><label for="filterDivisi">Divisi</label><input id="filterDivisi" type="text" placeholder="3" /></div>
+            <div class="field"><label for="filterMandor">Mandor</label><input id="filterMandor" type="text" placeholder="AGUS" /></div>
+            <div class="field"><label for="filterStart">Tanggal Awal</label><input id="filterStart" type="date" /></div>
+            <div class="field"><label for="filterEnd">Tanggal Akhir</label><input id="filterEnd" type="date" /></div>
+            <div class="field"><label>&nbsp;</label><button class="btn secondary" id="btnResetFilter" type="button">Reset Filter</button></div>
           </div>
         </div>
 
@@ -331,7 +344,7 @@
       <div class="actions">
         <button class="btn" id="btnDoLogin" type="button">Login</button>
       </div>
-      <div class="small muted">User awal online/lokal: NIP <strong>TC001</strong> • PIN <strong>1234</strong></div>
+      <div class="small muted">User awal lokal: NIP <strong>TC001</strong> • PIN <strong>1234</strong></div>
     </div>
   </div>
 
