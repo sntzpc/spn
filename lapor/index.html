@@ -1,0 +1,340 @@
+<!DOCTYPE html>
+<html lang="id">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Sekolah Pemanen</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="./styles.css" />
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.2/dist/chart.umd.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/jspdf@2.5.1/dist/jspdf.umd.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/jspdf-autotable@3.8.2/dist/jspdf.plugin.autotable.min.js"></script>
+</head>
+<body>
+  <div class="app-shell">
+    <header class="topbar">
+      <div class="brand-wrap">
+        <div class="brand-badge">SP</div>
+        <div>
+          <h1>Aplikasi Sekolah Pemanen</h1>
+          <p>Database lokal + Google Sheets • Tema oranye • Login PIN</p>
+        </div>
+      </div>
+      <div class="topbar-actions">
+        <button class="icon-btn" id="btnTheme" type="button" title="Ganti tema">🌙</button>
+        <div class="status-pill" id="statusPill">Siap</div>
+      </div>
+    </header>
+
+    <section class="hero-card">
+      <div>
+        <div class="hero-title">Laporan Harian Sekolah Pemanen</div>
+        <div class="hero-sub" id="profileSummary">Belum login</div>
+      </div>
+      <div class="hero-actions">
+        <button class="btn secondary" id="btnOpenLogin" type="button">Login</button>
+        <button class="btn secondary auth-only" id="btnLogout" type="button">Logout</button>
+        <button class="btn secondary auth-only" id="btnSync" type="button">Sync</button>
+        <button class="btn secondary auth-only" id="btnPull" type="button">Pull</button>
+      </div>
+    </section>
+
+    <nav class="tabs" id="mainTabs">
+      <button class="tab active" data-tab="dashboard" type="button">Dashboard</button>
+      <button class="tab auth-only" data-tab="master" type="button">Master Data</button>
+      <button class="tab auth-only" data-tab="laporan" type="button">Laporan</button>
+      <button class="tab auth-only" data-tab="rekap" type="button">Rekap & WA</button>
+      <button class="tab auth-only" data-tab="database" type="button">Database</button>
+      <button class="tab auth-only admin-only" data-tab="pengaturan" type="button">Pengaturan</button>
+    </nav>
+
+    <main>
+      <section class="tab-panel active" id="dashboard">
+        <div class="card">
+          <div class="card-title">Statistik</div>
+          <div class="stats-grid">
+            <div class="stat-box"><span>Total Laporan</span><strong id="statTotalReports">0</strong></div>
+            <div class="stat-box"><span>Laporan Hari Ini</span><strong id="statTodayReports">0</strong></div>
+            <div class="stat-box"><span>Peserta Hadir</span><strong id="statHadir">0</strong></div>
+            <div class="stat-box"><span>Peserta Tidak Hadir</span><strong id="statTidakHadir">0</strong></div>
+            <div class="stat-box"><span>Master Peserta</span><strong id="statPeserta">0</strong></div>
+            <div class="stat-box"><span>Master Mentor</span><strong id="statMentor">0</strong></div>
+            <div class="stat-box"><span>User Aktif</span><strong id="statUsers">0</strong></div>
+            <div class="stat-box"><span>Belum Sync</span><strong id="statUnsynced">0</strong></div>
+          </div>
+        </div>
+
+        <div class="grid cols-2">
+          <div class="card">
+            <div class="card-title">Cakupan Scope</div>
+            <div class="info-list" id="scopeInfo"></div>
+          </div>
+          <div class="card">
+            <div class="card-title">Ringkasan Aktivitas</div>
+            <div class="info-list" id="activityInfo"></div>
+          </div>
+        </div>
+
+        <div class="grid cols-2">
+          <div class="card chart-card">
+            <div class="card-title">Tren Laporan 7 Hari</div>
+            <canvas id="chartReports"></canvas>
+          </div>
+          <div class="card chart-card">
+            <div class="card-title">Hadir vs Tidak Hadir per Divisi</div>
+            <canvas id="chartAttendance"></canvas>
+          </div>
+        </div>
+
+        <div class="card chart-card">
+          <div class="card-title">Distribusi Laporan per Estate</div>
+          <canvas id="chartEstate"></canvas>
+        </div>
+
+        <div class="card">
+          <div class="card-title">Laporan Terbaru</div>
+          <div id="dashboardRecent" class="list-wrap"></div>
+        </div>
+      </section>
+
+      <section class="tab-panel" id="master">
+        <div class="grid cols-2">
+          <div class="card">
+            <div class="card-title">Master User & Login PIN</div>
+            <div class="grid cols-2 compact-grid">
+              <div class="field"><label for="userNip">NIP</label><input id="userNip" type="text" /></div>
+              <div class="field"><label for="userName">Nama</label><input id="userName" type="text" /></div>
+              <div class="field"><label for="userRole">Role</label>
+                <select id="userRole">
+                  <option value="MANDOR">MANDOR</option>
+                  <option value="ASISTEN">ASISTEN</option>
+                  <option value="MANAGER">MANAGER</option>
+                  <option value="TC_HEAD">TC_HEAD</option>
+                  <option value="ADMIN">ADMIN</option>
+                </select>
+              </div>
+              <div class="field"><label for="userEstate">Estate</label><input id="userEstate" type="text" placeholder="BTUE" /></div>
+              <div class="field"><label for="userDivisi">Divisi</label><input id="userDivisi" type="text" placeholder="3" /></div>
+              <div class="field"><label for="userPin">PIN</label><input id="userPin" type="password" maxlength="12" /></div>
+            </div>
+            <div class="actions">
+              <button class="btn" id="btnSaveUser" type="button">Simpan User</button>
+              <button class="btn secondary" id="btnResetUser" type="button">Reset</button>
+            </div>
+          </div>
+
+          <div class="card">
+            <div class="card-title">Master Estate & Divisi</div>
+            <div class="grid cols-2 compact-grid">
+              <div class="field"><label for="estateCode">Kode Estate</label><input id="estateCode" type="text" placeholder="BTUE" /></div>
+              <div class="field"><label for="estateName">Nama Estate</label><input id="estateName" type="text" placeholder="Bukit Tugak Estate" /></div>
+              <div class="field"><label for="estateDivisi">Divisi</label><input id="estateDivisi" type="text" placeholder="3" /></div>
+              <div class="field"><label for="estateManager">PIC/Manager</label><input id="estateManager" type="text" /></div>
+            </div>
+            <div class="actions">
+              <button class="btn" id="btnSaveEstate" type="button">Simpan Estate</button>
+              <button class="btn secondary" id="btnResetEstate" type="button">Reset</button>
+            </div>
+          </div>
+        </div>
+
+        <div class="grid cols-2">
+          <div class="card">
+            <div class="card-title">Master Peserta</div>
+            <div class="grid cols-2 compact-grid">
+              <div class="field"><label for="pesertaNip">NIP</label><input id="pesertaNip" type="text" /></div>
+              <div class="field"><label for="pesertaName">Nama Peserta</label><input id="pesertaName" type="text" /></div>
+              <div class="field"><label for="pesertaGender">Gender</label>
+                <select id="pesertaGender"><option value="L">L</option><option value="P">P</option></select>
+              </div>
+              <div class="field"><label for="pesertaDivisiCode">Divisi Code</label><input id="pesertaDivisiCode" type="text" placeholder="BTUE3" /></div>
+              <div class="field full"><label for="pesertaMentorNip">NIP Mentor</label><input id="pesertaMentorNip" type="text" /></div>
+            </div>
+            <div class="actions">
+              <button class="btn" id="btnSavePeserta" type="button">Simpan Peserta</button>
+              <button class="btn secondary" id="btnResetPeserta" type="button">Reset</button>
+            </div>
+          </div>
+
+          <div class="card">
+            <div class="card-title">Master Mentor</div>
+            <div class="grid cols-2 compact-grid">
+              <div class="field"><label for="mentorNip">NIP</label><input id="mentorNip" type="text" /></div>
+              <div class="field"><label for="mentorName">Nama Mentor</label><input id="mentorName" type="text" /></div>
+              <div class="field"><label for="mentorDivisiCode">Divisi Code</label><input id="mentorDivisiCode" type="text" placeholder="BTUE3" /></div>
+              <div class="field"><label for="mentorActive">Status</label>
+                <select id="mentorActive"><option value="TRUE">Aktif</option><option value="FALSE">Nonaktif</option></select>
+              </div>
+            </div>
+            <div class="actions">
+              <button class="btn" id="btnSaveMentor" type="button">Simpan Mentor</button>
+              <button class="btn secondary" id="btnResetMentor" type="button">Reset</button>
+            </div>
+          </div>
+        </div>
+
+        <div class="grid cols-2">
+          <div class="card">
+            <div class="card-title">Data User</div>
+            <div id="userList" class="list-wrap"></div>
+          </div>
+          <div class="card">
+            <div class="card-title">Data Estate / Divisi</div>
+            <div id="estateList" class="list-wrap"></div>
+          </div>
+        </div>
+
+        <div class="grid cols-2">
+          <div class="card">
+            <div class="card-title">Data Peserta</div>
+            <div id="pesertaList" class="list-wrap"></div>
+          </div>
+          <div class="card">
+            <div class="card-title">Data Mentor</div>
+            <div id="mentorList" class="list-wrap"></div>
+          </div>
+        </div>
+      </section>
+
+      <section class="tab-panel" id="laporan">
+        <div class="card" id="formCard">
+          <div class="card-title">Form Laporan Harian Mandor</div>
+          <input id="editReportId" type="hidden" />
+          <div class="grid cols-2">
+            <div class="field"><label for="tanggal">Tanggal</label><input id="tanggal" type="date" /></div>
+            <div class="field"><label for="hariTeks">Hari</label><input id="hariTeks" type="text" readonly /></div>
+            <div class="field"><label for="divisiCode">Divisi</label><input id="divisiCode" type="text" placeholder="BTUE3" /></div>
+            <div class="field"><label for="mandorName">Mandor</label><input id="mandorName" type="text" placeholder="AGUS" /></div>
+            <div class="field"><label for="hadirCount">Peserta hadir</label><input id="hadirCount" type="number" min="0" /></div>
+            <div class="field"><label for="tidakHadirCount">Peserta tidak hadir</label><input id="tidakHadirCount" type="number" min="0" /></div>
+            <div class="field full"><label for="ketidakhadiran">Keterangan ketidakhadiran</label><textarea id="ketidakhadiran" rows="2"></textarea></div>
+            <div class="field"><label for="materi">Materi</label><textarea id="materi" rows="2"></textarea></div>
+            <div class="field"><label for="mentorAktif">Mentor aktif</label><input id="mentorAktif" type="number" min="0" /></div>
+            <div class="field full"><label for="lokasi">Lokasi</label><textarea id="lokasi" rows="2"></textarea></div>
+            <div class="field"><label for="pesertaBaik">Peserta berkembang baik</label><textarea id="pesertaBaik" rows="3"></textarea></div>
+            <div class="field"><label for="pesertaBina">Peserta perlu pembinaan</label><textarea id="pesertaBina" rows="3"></textarea></div>
+            <div class="field full"><label for="catatanTeknis">Catatan teknis di lapangan</label><textarea id="catatanTeknis" rows="3"></textarea></div>
+            <div class="field full"><label for="kendala">Kendala hari ini</label><textarea id="kendala" rows="3"></textarea></div>
+            <div class="field full"><label for="tindakLanjut">Rencana tindak lanjut besok</label><textarea id="tindakLanjut" rows="3"></textarea></div>
+          </div>
+          <div class="actions">
+            <button class="btn secondary" id="btnResetForm" type="button">Reset Form</button>
+            <button class="btn" id="btnSave" type="button">Simpan</button>
+            <button class="btn accent" id="btnGenerateMandor" type="button">Generate WA Mandor</button>
+          </div>
+        </div>
+
+        <div class="card">
+          <div class="card-title">Preview WhatsApp</div>
+          <textarea id="waPreview" rows="18" readonly></textarea>
+          <div class="actions">
+            <button class="btn secondary" id="btnCopyWA" type="button">Copy</button>
+            <button class="btn secondary" id="btnOpenWA" type="button">Buka WhatsApp</button>
+          </div>
+        </div>
+      </section>
+
+      <section class="tab-panel" id="rekap">
+        <div class="card">
+          <div class="card-title">Generate Rekap WA</div>
+          <div class="grid cols-3">
+            <div class="field"><label for="rekapDate">Tanggal Rekap</label><input id="rekapDate" type="date" /></div>
+            <div class="field"><label for="rekapRole">Generate sebagai</label>
+              <select id="rekapRole">
+                <option value="ASISTEN">ASISTEN</option>
+                <option value="MANAGER">MANAGER</option>
+                <option value="TC_HEAD">TC_HEAD</option>
+              </select>
+            </div>
+            <div class="field"><label for="rekapEstate">Filter Estate</label><input id="rekapEstate" type="text" placeholder="otomatis sesuai role" /></div>
+          </div>
+          <div class="small muted" id="scopeHint">Rekap mengikuti otorisasi user login.</div>
+          <div class="actions">
+            <button class="btn accent" id="btnGenerateRekap" type="button">Generate Rekap WA</button>
+            <button class="btn secondary" id="btnExportExcel" type="button">Export Excel</button>
+            <button class="btn secondary" id="btnExportPdf" type="button">Export PDF</button>
+          </div>
+        </div>
+
+        <div class="card">
+          <div class="card-title">Preview Rekap WA</div>
+          <textarea id="rekapPreview" rows="18" readonly></textarea>
+          <div class="actions">
+            <button class="btn secondary" id="btnCopyRekap" type="button">Copy</button>
+          </div>
+        </div>
+      </section>
+
+      <section class="tab-panel" id="database">
+        <div class="card">
+          <div class="card-title">Filter Laporan</div>
+          <div class="grid cols-3 compact-grid">
+            <div class="field"><label for="filterEstate">Estate</label><input id="filterEstate" type="text" placeholder="BTUE" /></div>
+            <div class="field"><label for="filterDivisi">Divisi</label><input id="filterDivisi" type="text" placeholder="3 atau BTUE3" /></div>
+            <div class="field"><label for="filterMandor">Mandor</label><input id="filterMandor" type="text" placeholder="AGUS" /></div>
+            <div class="field"><label for="filterStart">Tanggal Awal</label><input id="filterStart" type="date" /></div>
+            <div class="field"><label for="filterEnd">Tanggal Akhir</label><input id="filterEnd" type="date" /></div>
+            <div class="actions inline-actions align-end">
+              <button class="btn secondary" id="btnApplyFilter" type="button">Terapkan Filter</button>
+              <button class="btn secondary" id="btnClearFilter" type="button">Reset Filter</button>
+            </div>
+          </div>
+        </div>
+
+        <div class="card">
+          <div class="card-title">Ringkasan Database Lokal</div>
+          <div class="stats-grid">
+            <div class="stat-box"><span>Total Data</span><strong id="statTotal">0</strong></div>
+            <div class="stat-box"><span>Belum Sync</span><strong id="statUnsyncedDb">0</strong></div>
+            <div class="stat-box"><span>Role Aktif</span><strong id="statRole">-</strong></div>
+            <div class="stat-box"><span>Scope Aktif</span><strong id="statScope">-</strong></div>
+          </div>
+        </div>
+
+        <div class="card">
+          <div class="card-title">Riwayat Laporan</div>
+          <div id="historyList" class="list-wrap"></div>
+        </div>
+      </section>
+
+      <section class="tab-panel" id="pengaturan">
+        <div class="card">
+          <div class="card-title">Pengaturan Sinkronisasi</div>
+          <div class="grid cols-2">
+            <div class="field full"><label for="gasUrl">GAS Web App URL</label><input id="gasUrl" type="text" placeholder="https://script.google.com/macros/s/.../exec" /></div>
+            <div class="field"><label for="sheetId">Spreadsheet ID</label><input id="sheetId" type="text" /></div>
+            <div class="field"><label for="defaultTheme">Default Tema</label>
+              <select id="defaultTheme"><option value="light">Light</option><option value="dark">Dark</option></select>
+            </div>
+          </div>
+          <div class="actions">
+            <button class="btn" id="btnSaveSettings" type="button">Simpan Pengaturan</button>
+            <button class="btn secondary" id="btnSetupSheets" type="button">Buat Sheet Otomatis</button>
+            <button class="btn secondary" id="btnTestConnection" type="button">Tes Koneksi</button>
+          </div>
+          <div class="result-box" id="settingsResult">-</div>
+        </div>
+      </section>
+    </main>
+  </div>
+
+  <div class="modal" id="loginModal" aria-hidden="true">
+    <div class="modal-card narrow">
+      <button class="close-btn" data-close="loginModal" type="button">×</button>
+      <h2>Login PIN</h2>
+      <p class="small muted">Gunakan NIP dan PIN sesuai master user.</p>
+      <div class="field"><label for="loginNip">NIP</label><input id="loginNip" type="text" /></div>
+      <div class="field"><label for="loginPin">PIN</label><input id="loginPin" type="password" maxlength="12" /></div>
+      <div class="actions">
+        <button class="btn" id="btnDoLogin" type="button">Login</button>
+      </div>
+      <div class="small muted">User awal online/lokal: NIP <strong>TC001</strong> • PIN <strong>1234</strong></div>
+    </div>
+  </div>
+
+  <script src="./app.js"></script>
+</body>
+</html>
