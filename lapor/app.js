@@ -6,8 +6,8 @@
     sheetId: '1B6KmlUCOKGozN6abEhp7nzpJMMm1BylBA-tKIrGZBSA',
     defaultTheme: 'light'
   };
-  const STORAGE_KEY = 'sp_app_v4';
-  const THEME_KEY = 'sp_theme_v4';
+  const STORAGE_KEY = 'sp_app_v5';
+  const THEME_KEY = 'sp_theme_v5';
   const ADMIN_USER = {
     id: 'USR-TC001', nip: 'TC001', name: 'ADMIN', role: 'ADMIN', estate: '', divisi: '', pin: '1234',
     active: true, createdAt: new Date().toISOString(), updatedAt: new Date().toISOString(), synced: false
@@ -15,7 +15,7 @@
   const DEFAULT_STATE = {
     settings: { ...DEFAULT_REMOTE },
     session: { isLoggedIn: false, userId: '', deviceId: '' },
-    users: [ADMIN_USER], estates: [], peserta: [], mentors: [], reports: [], meta: { lastBootstrapAt: '', lastPullAt: '' }
+    users: [ADMIN_USER], estates: [], peserta: [], mentors: [], reports: [], meta: { lastBootstrapAt: '', lastPullAt: '', failedSyncQueue: [] }
   };
 
   const $ = (s, r = document) => r.querySelector(s);
@@ -34,12 +34,12 @@
       peserta: Array.isArray(parsed?.peserta) ? parsed.peserta : [],
       mentors: Array.isArray(parsed?.mentors) ? parsed.mentors : [],
       reports: Array.isArray(parsed?.reports) ? parsed.reports : [],
-      meta: { ...((parsed && parsed.meta) || {}) }
+      meta: { lastBootstrapAt:'', lastPullAt:'', failedSyncQueue: [], ...((parsed && parsed.meta) || {}) }
     };
   }
   function openDb(){
     return new Promise((resolve,reject)=>{
-      const req = indexedDB.open('sp_app_db_v2', 1);
+      const req = indexedDB.open('sp_app_db_v3', 1);
       req.onupgradeneeded = ()=>{ const db=req.result; if(!db.objectStoreNames.contains('kv')) db.createObjectStore('kv'); };
       req.onsuccess = ()=> resolve(req.result);
       req.onerror = ()=> reject(req.error || new Error('Gagal membuka IndexedDB.'));
@@ -98,7 +98,25 @@
     try { localStorage.removeItem(STORAGE_KEY); } catch {}
   }
   function uid(prefix){ return `${prefix}-${Math.random().toString(36).slice(2,8).toUpperCase()}-${Date.now().toString(36).toUpperCase()}`; }
-  function getOrCreateDeviceId(){ const k='sp_device_id_v3'; let v=localStorage.getItem(k); if(!v){ v=uid('DEV'); localStorage.setItem(k,v); } return v; }
+  function getOrCreateDeviceId(){ const k='sp_device_id_v4'; let v=localStorage.getItem(k); if(!v){ v=uid('DEV'); localStorage.setItem(k,v); } return v; }
+  function sleep(ms){ return new Promise(r=>setTimeout(r, ms)); }
+  function failedQueue(){ return Array.isArray(State.meta?.failedSyncQueue) ? State.meta.failedSyncQueue : (State.meta.failedSyncQueue = []); }
+  function upsertFailedSync(item){
+    const arr = failedQueue();
+    const idx = arr.findIndex(x => x.key===item.key && x.id===item.id);
+    const prev = idx >= 0 ? arr[idx] : {};
+    const merged = { ...prev, ...item, attempts: Number(item.attempts ?? prev.attempts ?? 0), updatedAt: nowISO() };
+    if(idx >= 0) arr[idx] = merged; else arr.push(merged);
+  }
+  function clearFailedSyncByRefs(refs){
+    if(!refs?.length) return;
+    const keys = new Set(refs.map(r => `${r.key}::${r.id}`));
+    State.meta.failedSyncQueue = failedQueue().filter(x => !keys.has(`${x.key}::${x.id}`));
+  }
+  function clearFailedSyncByKeyId(key,id){ State.meta.failedSyncQueue = failedQueue().filter(x => !(x.key===key && x.id===id)); }
+  function labelForKey(key){ return ({users:'User',estates:'Estate',peserta:'Peserta',mentors:'Mentor',reports:'Laporan'})[key] || key; }
+  function fmtDateTime(iso){ if(!iso) return '-'; try { return new Intl.DateTimeFormat('id-ID',{day:'2-digit',month:'short',year:'numeric',hour:'2-digit',minute:'2-digit'}).format(new Date(iso)); } catch { return iso; } }
+  function getStateCollection(key){ return Array.isArray(State[key]) ? State[key] : []; }
   function nowISO(){ return new Date().toISOString(); }
   function todayISO(){ return new Date().toISOString().slice(0,10); }
   function esc(s){ return String(s||'').replace(/[&<>"']/g,m=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#039;'}[m])); }
@@ -200,17 +218,28 @@
     if(!gasUrl) throw new Error('GAS URL belum tersedia.');
     const request = { action, sheetId: State.settings.sheetId || DEFAULT_REMOTE.sheetId, ...payload };
     const requestLen = JSON.stringify(request).length;
+    const maxAttempts = action === 'pullAll' ? 2 : 3;
+    const timeoutMs = action === 'pullAll' ? 45000 : 30000;
     if (!preferGet || requestLen > 1400) {
-      try {
-        const res = await fetch(gasUrl, { method:'POST', headers:{'Content-Type':'text/plain;charset=utf-8'}, body: JSON.stringify(request) });
-        const raw = await res.text();
-        let json = null;
-        try { json = JSON.parse(raw); } catch { throw new Error(raw || 'Respons server tidak valid.'); }
-        if(!json.success) throw new Error(json.message || 'Permintaan gagal.');
-        return json;
-      } catch (err) {
-        if (requestLen > 8000) throw err;
+      let lastErr = null;
+      for(let attempt=1; attempt<=maxAttempts; attempt++){
+        const controller = typeof AbortController !== 'undefined' ? new AbortController() : null;
+        const timer = controller ? setTimeout(()=>controller.abort(), timeoutMs) : null;
+        try {
+          const res = await fetch(gasUrl, { method:'POST', headers:{'Content-Type':'text/plain;charset=utf-8'}, body: JSON.stringify(request), signal: controller?.signal });
+          const raw = await res.text();
+          let json = null;
+          try { json = JSON.parse(raw); } catch { throw new Error(raw || 'Respons server tidak valid.'); }
+          if(!json.success) throw new Error(json.message || 'Permintaan gagal.');
+          if (timer) clearTimeout(timer);
+          return json;
+        } catch (err) {
+          if (timer) clearTimeout(timer);
+          lastErr = err?.name === 'AbortError' ? new Error('Koneksi timeout ke Apps Script.') : err;
+          if (attempt < maxAttempts) await sleep(500 * attempt);
+        }
       }
+      if (requestLen > 8000) throw lastErr;
     }
     return await jsonpRequest(gasUrl, request);
   }
@@ -535,6 +564,108 @@
     ].join('\n');
   }
 
+
+  function chunkArray(arr, size){ const out=[]; for(let i=0;i<arr.length;i+=size) out.push(arr.slice(i,i+size)); return out; }
+  function collectPendingByKey(key, onlyFailed=false){
+    const rows = getStateCollection(key);
+    if(onlyFailed){
+      const ids = new Set(failedQueue().filter(x => x.key===key).map(x => x.id));
+      return rows.filter(x => ids.has(x.id));
+    }
+    return rows.filter(x => !x.synced);
+  }
+  function markRowsSynced(key, rows){
+    const ids = new Set((rows||[]).map(x => x.id));
+    getStateCollection(key).forEach(x => { if(ids.has(x.id)){ x.synced = true; x.syncedAt = nowISO(); } });
+    clearFailedSyncByRefs((rows||[]).map(x => ({key, id:x.id})));
+  }
+  function markRowsFailed(key, rows, err){
+    (rows||[]).forEach(row => {
+      const current = failedQueue().find(x => x.key===key && x.id===row.id);
+      upsertFailedSync({ key, id: row.id, name: row.name || row.mandorName || row.nip || row.divisiCode || row.code || row.id, error: String(err?.message || err || 'Sync gagal'), attempts: Number(current?.attempts || 0) + 1, lastAttemptAt: nowISO() });
+    });
+  }
+  async function syncDatasetBatches(key, rows, progress, startPct, endPct){
+    if(!rows.length) return { success:0, failed:0 };
+    const chunks = chunkArray(rows, key === 'reports' ? 25 : 50);
+    let success=0, failed=0;
+    for(let i=0;i<chunks.length;i++){
+      const part = chunks[i];
+      const pct = startPct + Math.round(((i+1)/chunks.length) * Math.max(1, endPct - startPct));
+      progress(pct, `Mengirim ${labelForKey(key)} batch ${i+1}/${chunks.length}...`, 'Koneksi lemah akan dicoba ulang otomatis per batch.');
+      try {
+        await apiRequest('syncBatch', { entity: key, rows: part, timestamp: nowISO() }, false);
+        markRowsSynced(key, part);
+        success += part.length;
+      } catch(err){
+        markRowsFailed(key, part, err);
+        failed += part.length;
+      }
+      saveState(true);
+      await sleep(80);
+    }
+    return { success, failed };
+  }
+  async function retryFailedSyncAll(silent=false){
+    if(!isLoggedIn()) return setStatus('Login dahulu.','no');
+    const items = failedQueue();
+    if(!items.length){ setStatus('Tidak ada data gagal sync.','ok'); return { success:true, retried:0 }; }
+    const job = async (progress)=>{
+      let totalSuccess=0, totalFailed=0;
+      const keys = ['users','estates','peserta','mentors','reports'];
+      for(let i=0;i<keys.length;i++){
+        const key = keys[i];
+        const rows = collectPendingByKey(key, true);
+        const rangeStart = 10 + (i*16);
+        const result = await syncDatasetBatches(key, rows, progress, rangeStart, rangeStart+12);
+        totalSuccess += result.success; totalFailed += result.failed;
+      }
+      return { totalSuccess, totalFailed };
+    };
+    const res = silent ? await job(()=>{}) : await runBusy(job, { title:'Sync ulang data gagal', sub:'Hanya data yang sebelumnya gagal akan dikirim ulang.', step:'Menyiapkan daftar gagal...', doneStep:'Sync ulang selesai' });
+    saveState();
+    renderFailedSync();
+    setStatus(res.totalFailed ? `Sebagian berhasil. ${res.totalFailed} item masih gagal.` : 'Semua data gagal berhasil di-sync ulang.', res.totalFailed ? 'info' : 'ok');
+    return res;
+  }
+  function renderFailedSync(){
+    const items = failedQueue().slice().sort((a,b)=> String(b.lastAttemptAt||'').localeCompare(String(a.lastAttemptAt||'')));
+    $('#statFailedSync') && ($('#statFailedSync').textContent = items.length);
+    $('#statFailedTypes') && ($('#statFailedTypes').textContent = new Set(items.map(x => x.key)).size || 0);
+    $('#statFailedAttempts') && ($('#statFailedAttempts').textContent = items.reduce((s,x)=> s + Number(x.attempts||0), 0));
+    $('#statFailedLast') && ($('#statFailedLast').textContent = items[0]?.lastAttemptAt ? fmtDateTime(items[0].lastAttemptAt) : '-');
+    const wrap = $('#failedSyncList'); if(!wrap) return;
+    wrap.innerHTML = items.length ? items.map(it => {
+      const row = getStateCollection(it.key).find(x => x.id===it.id);
+      const title = row?.name || row?.mandorName || row?.nip || row?.divisiCode || row?.code || it.name || it.id;
+      const detail = row?.tanggal ? `${formatLongDate(row.tanggal)} • ${row.divisiCode || '-'}` : (row?.estate ? `${row.estate}${row.divisi ? ' • Divisi ' + row.divisi : ''}` : '-');
+      return `
+      <div class="list-item">
+        <div class="list-title">${esc(labelForKey(it.key))} • ${esc(title)} <span class="chip no">Gagal</span></div>
+        <div class="list-meta">ID: ${esc(it.id)} • ${esc(detail)} • Percobaan ${Number(it.attempts||0)} • ${esc(fmtDateTime(it.lastAttemptAt))}</div>
+        <div class="list-body">${esc(it.error || '-')}</div>
+        <div class="actions top-gap">
+          <button class="btn secondary btn-sm" data-retry-failed="${esc(it.key)}::${esc(it.id)}" type="button">Sync Ulang Item Ini</button>
+          <button class="btn secondary btn-sm" data-clear-failed="${esc(it.key)}::${esc(it.id)}" type="button">Hapus dari Daftar</button>
+        </div>
+      </div>`;
+    }).join('') : '<div class="small muted">Belum ada data gagal sinkronisasi.</div>';
+    $$('[data-retry-failed]').forEach(btn => btn.addEventListener('click', async ()=>{
+      const [key,id] = btn.dataset.retryFailed.split('::');
+      const row = getStateCollection(key).find(x => x.id===id);
+      if(!row) return setStatus('Data lokal untuk item ini tidak ditemukan.','no');
+      try {
+        await runBusy((progress)=> syncDatasetBatches(key, [row], progress, 20, 85), { title:'Sync ulang item gagal', sub:'Item gagal sedang dikirim ulang ke server.', step:'Mengirim data...', doneStep:'Sync item selesai' });
+        saveState(); renderAll(); renderFailedSync();
+        setStatus('Item berhasil di-sync ulang.','ok');
+      } catch(err){ setStatus(err.message,'no'); }
+    }));
+    $$('[data-clear-failed]').forEach(btn => btn.addEventListener('click', ()=>{
+      const [key,id] = btn.dataset.clearFailed.split('::');
+      clearFailedSyncByKeyId(key,id); saveState(); renderFailedSync(); setStatus('Log gagal dihapus dari daftar.','ok');
+    }));
+  }
+
   async function setupSheets(){ const res = await apiRequest('setupWorkbook', {}, false); $('#settingsResult').textContent = res.message; setStatus(res.message,'ok'); }
   async function testConnection(){ const res = await apiRequest('testConnection', {}, false); $('#settingsResult').textContent = `${res.message} ${res.time||''}`; setStatus('Koneksi berhasil.','ok'); }
   async function saveSettingsRemote(){
@@ -548,18 +679,28 @@
   async function syncAll(silent=false, progressCb){
     if(!isLoggedIn()) return setStatus('Login dahulu.','no');
     const job = async (progress)=>{
-      const user = currentUser();
-      progress(14, 'Menyiapkan paket sync...', `Mengumpulkan data ${user?.role || ''} dari perangkat ini.`);
-      const payload = { users: State.users, estates: State.estates, peserta: State.peserta, mentors: State.mentors, reports: State.reports, settings: State.settings, timestamp: nowISO() };
-      progress(44, 'Mengirim data ke server...', 'Jangan tutup halaman sampai proses selesai.');
-      const res = await apiRequest('syncAll', payload, false);
-      progress(78, 'Menandai data lokal sudah sinkron...', 'Memperbarui status sync pada perangkat.');
-      ['users','estates','peserta','mentors','reports'].forEach(key => State[key].forEach(x => { x.synced = true; x.syncedAt = nowISO(); }));
-      saveState();
-      return res;
+      const datasets = ['users','estates','peserta','mentors','reports'];
+      let totalSuccess = 0, totalFailed = 0;
+      progress(8, 'Menyiapkan sinkronisasi...', 'Data akan dikirim bertahap per batch agar lebih aman di mobile.');
+      try { await apiRequest('saveConfig', { settings: State.settings }, false); } catch {}
+      for(let i=0;i<datasets.length;i++){
+        const key = datasets[i];
+        const rows = collectPendingByKey(key, false);
+        const start = 14 + (i * 16);
+        const end = start + 13;
+        const result = await syncDatasetBatches(key, rows, progress, start, end);
+        totalSuccess += result.success;
+        totalFailed += result.failed;
+      }
+      progress(94, 'Merapikan status lokal...', 'Memperbarui status sync dan daftar gagal.');
+      saveState(true);
+      return { success:true, totalSuccess, totalFailed, message: totalFailed ? `Sebagian data berhasil sync. ${totalFailed} item masih gagal.` : 'Semua data berhasil di-sync.' };
     };
-    const res = silent ? await job(progressCb || (()=>{})) : await runBusy(job, { title:'Sinkronisasi data', sub:'Data lokal sedang dikirim ke database online.', step:'Memulai sync...', doneStep:'Sync selesai' });
-    setStatus(res.message || 'Sync berhasil.','ok');
+    const res = silent ? await job(progressCb || (()=>{})) : await runBusy(job, { title:'Sinkronisasi data', sub:'Data lokal sedang dikirim ke database online per batch.', step:'Memulai sync...', doneStep:'Sync selesai' });
+    saveState();
+    renderAll();
+    renderFailedSync();
+    setStatus(res.message || 'Sync selesai.', res.totalFailed ? 'info' : 'ok');
     return res;
   }
   async function pullAll(silent=false, progressCb){
@@ -909,7 +1050,7 @@ Lokasi: ${esc(r.lokasi)}</div>
     $$('[data-del-report]').forEach(btn => btn.addEventListener('click', ()=> deleteReport(btn.dataset.delReport)));
   }
   function fillSettings(){ $('#gasUrl').value = State.settings.gasUrl || DEFAULT_REMOTE.gasUrl; $('#sheetId').value = State.settings.sheetId || DEFAULT_REMOTE.sheetId; $('#defaultTheme').value = State.settings.defaultTheme || 'light'; }
-  function renderAll(){ renderAuth(); renderPermissions(); renderDashboard(); renderLists(); renderDb(); renderMonthlyRecap(); fillSettings(); }
+  function renderAll(){ renderAuth(); renderPermissions(); renderDashboard(); renderLists(); renderDb(); renderMonthlyRecap(); fillSettings(); renderFailedSync(); }
   function activateTab(tabId){ $$('.tab').forEach(x=>x.classList.toggle('active', x.dataset.tab===tabId)); $$('.tab-panel').forEach(x=>x.classList.toggle('active', x.id===tabId)); }
 
   function initEvents(){
@@ -936,6 +1077,9 @@ Lokasi: ${esc(r.lokasi)}</div>
     $('#btnExportMonthlyPdf').addEventListener('click', exportMonthlyPdf);
     $('#btnSaveSettings').addEventListener('click', ()=> runBusy(()=>saveSettingsRemote(), { title:'Menyimpan pengaturan', sub:'Pengaturan koneksi sedang disimpan ke database online.', step:'Menyimpan pengaturan...', doneStep:'Pengaturan tersimpan' }).catch(err => { $('#settingsResult').textContent = err.message; setStatus(err.message,'no'); })); $('#btnSetupSheets').addEventListener('click', ()=> runBusy(()=>setupSheets(), { title:'Menyiapkan sheet online', sub:'Sheet dan header sedang dicek pada spreadsheet tujuan.', step:'Mengecek workbook...', doneStep:'Sheet siap' }).catch(err => { $('#settingsResult').textContent = err.message; setStatus(err.message,'no'); })); $('#btnTestConnection').addEventListener('click', ()=> runBusy(()=>testConnection(), { title:'Menguji koneksi', sub:'Sedang mencoba koneksi ke Apps Script.', step:'Menghubungi server...', doneStep:'Koneksi berhasil' }).catch(err => { $('#settingsResult').textContent = err.message; setStatus(err.message,'no'); }));
     $('#btnSync').addEventListener('click', ()=> syncAll().catch(err => setStatus(err.message,'no'))); $('#btnPull').addEventListener('click', ()=> pullAll().catch(err => setStatus(err.message,'no')));
+    $('#btnRetryAllFailed')?.addEventListener('click', ()=> retryFailedSyncAll().catch(err => setStatus(err.message,'no')));
+    $('#btnRefreshFailed')?.addEventListener('click', ()=> { renderFailedSync(); setStatus('Daftar gagal diperbarui.','ok'); });
+    $('#btnClearFailedLog')?.addEventListener('click', ()=> { if(!failedQueue().length) return setStatus('Daftar gagal sudah kosong.','ok'); if(!confirm('Hapus semua log gagal sync?')) return; State.meta.failedSyncQueue = []; saveState(); renderFailedSync(); setStatus('Log gagal dibersihkan.','ok'); });
     $('#btnApplyFilter').addEventListener('click', renderDb); $('#btnClearFilter').addEventListener('click', ()=>{ ['filterEstate','filterDivisi','filterMandor','filterStart','filterEnd'].forEach(id=>$('#'+id).value=''); renderDb(); });
     $('#btnResetApp')?.addEventListener('click', resetApplication); ['rekapMonth','rekapMonthlyEstate','rekapMonthlyDivisi'].forEach(id=>$('#'+id)?.addEventListener('change', renderMonthlyRecap));
   }

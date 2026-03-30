@@ -40,3 +40,10 @@ Langkah implementasi:
 Catatan:
 - Jika URL Web App berubah setelah deploy baru, perbarui GAS URL pada menu Pengaturan.
 - Untuk hasil paling stabil di mobile, lakukan Pull sekali setelah login pertama berhasil.
+
+
+UPDATE MODIFIKASI:
+1. Ditambahkan tab Gagal Sync untuk melihat item yang gagal dikirim, retry per item, retry semua, dan hapus log gagal.
+2. Sinkronisasi frontend diubah menjadi batch kecil per jenis data agar lebih tahan pada koneksi mobile lemah.
+3. Backend Code.gs ditambah action syncBatch, document lock, dan retry operasi sheet agar lebih stabil saat jaringan tidak konsisten.
+4. Jika sebagian batch gagal, item gagal tetap tersimpan lokal dan masuk daftar retry, tidak membuat seluruh sync gagal total.

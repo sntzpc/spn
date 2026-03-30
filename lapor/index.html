@@ -49,6 +49,7 @@
       <button class="tab auth-only" data-tab="laporan" type="button">Laporan</button>
       <button class="tab auth-only" data-tab="rekap" type="button">Rekap & WA</button>
       <button class="tab auth-only" data-tab="database" type="button">Database</button>
+      <button class="tab auth-only" data-tab="gagal-sync" type="button">Gagal Sync</button>
       <button class="tab auth-only admin-only" data-tab="pengaturan" type="button">Pengaturan</button>
     </nav>
 
@@ -294,7 +295,7 @@
             <button class="btn secondary" id="btnExportMonthlyExcel" type="button">Export Rekap Bulanan Excel</button>
             <button class="btn secondary" id="btnExportMonthlyPdf" type="button">Export Rekap Bulanan PDF</button>
           </div>
-          <div class="small muted">Rekap bulanan mengikuti scope user aktif. Kartu menampilkan akumulasi laporan per estate/divisi dalam bulan terpilih.</div>
+          <div class="small muted" style="display: none;">Rekap bulanan mengikuti scope user aktif. Kartu menampilkan akumulasi laporan per estate/divisi dalam bulan terpilih.</div>
         </div>
 
         <div class="card">
@@ -332,6 +333,30 @@
         <div class="card">
           <div class="card-title">Riwayat Laporan</div>
           <div id="historyList" class="list-wrap"></div>
+        </div>
+      </section>
+
+
+      <section class="tab-panel" id="gagal-sync">
+        <div class="card">
+          <div class="card-title">Ringkasan Gagal Sinkronisasi</div>
+          <div class="stats-grid">
+            <div class="stat-box"><span>Item Gagal</span><strong id="statFailedSync">0</strong></div>
+            <div class="stat-box"><span>Jenis Data</span><strong id="statFailedTypes">0</strong></div>
+            <div class="stat-box"><span>Percobaan Ulang</span><strong id="statFailedAttempts">0</strong></div>
+            <div class="stat-box"><span>Terakhir Dicoba</span><strong id="statFailedLast">-</strong></div>
+          </div>
+          <div class="actions">
+            <button class="btn" id="btnRetryAllFailed" type="button">Sync Ulang Semua Gagal</button>
+            <button class="btn secondary" id="btnRefreshFailed" type="button">Refresh Daftar</button>
+            <button class="btn secondary" id="btnClearFailedLog" type="button">Bersihkan Log Gagal</button>
+          </div>
+          <div class="small muted" style="display: none;">Halaman ini menampilkan data yang pernah gagal dikirim. Item yang berhasil pada sync berikutnya akan hilang otomatis dari daftar ini.</div>
+        </div>
+
+        <div class="card">
+          <div class="card-title">Daftar Data Gagal Sync</div>
+          <div id="failedSyncList" class="list-wrap"></div>
         </div>
       </section>
 

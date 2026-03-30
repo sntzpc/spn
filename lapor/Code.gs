@@ -25,6 +25,7 @@ function handleRequest_(e){
       case 'setupWorkbook': return setupWorkbook_(req);
       case 'saveConfig': return saveConfig_(req);
       case 'syncAll': return syncAll_(req);
+      case 'syncBatch': return syncBatch_(req);
       case 'pullAll': return pullAll_(req);
       case 'deleteReport': return deleteReport_(req);
       default: return respond_(false, 'Action tidak dikenal.', null, req);
@@ -61,15 +62,35 @@ function syncAll_(req){
   var ss = SpreadsheetApp.openById(req.sheetId || DEFAULT_CONFIG_.sheetId);
   ensureSheets_(ss);
   ensureAdminUser_(ss.getSheetByName('Users'));
-  if (req.settings) saveConfigMap_(ss.getSheetByName('Config'), req.settings);
-  upsertByKey_(ss.getSheetByName('Users'), req.users || [], 'id', userToRow_);
-  upsertByKey_(ss.getSheetByName('MasterEstateDivisi'), req.estates || [], 'id', estateToRow_);
-  upsertByKey_(ss.getSheetByName('MasterPeserta'), req.peserta || [], 'id', pesertaToRow_);
-  upsertByKey_(ss.getSheetByName('MasterMentor'), req.mentors || [], 'id', mentorToRow_);
-  upsertByKey_(ss.getSheetByName('LaporanHarian'), req.reports || [], 'id', reportToRow_);
-  recalcRecaps_(ss);
+  withDocumentLock_(function(){
+    if (req.settings) saveConfigMap_(ss.getSheetByName('Config'), req.settings);
+    upsertByKeySafe_(ss.getSheetByName('Users'), req.users || [], 'id', userToRow_);
+    upsertByKeySafe_(ss.getSheetByName('MasterEstateDivisi'), req.estates || [], 'id', estateToRow_);
+    upsertByKeySafe_(ss.getSheetByName('MasterPeserta'), req.peserta || [], 'id', pesertaToRow_);
+    upsertByKeySafe_(ss.getSheetByName('MasterMentor'), req.mentors || [], 'id', mentorToRow_);
+    upsertByKeySafe_(ss.getSheetByName('LaporanHarian'), req.reports || [], 'id', reportToRow_);
+    recalcRecaps_(ss);
+  });
   appendAudit_(ss.getSheetByName('AuditLog'), 'SYNC_ALL', 'Sinkronisasi data berhasil', req.timestamp || new Date().toISOString());
   return respond_(true, 'Sync berhasil.', null, req);
+}
+function syncBatch_(req){
+  var ss = SpreadsheetApp.openById(req.sheetId || DEFAULT_CONFIG_.sheetId);
+  ensureSheets_(ss);
+  ensureAdminUser_(ss.getSheetByName('Users'));
+  var entity = String(req.entity || '');
+  var rows = Array.isArray(req.rows) ? req.rows : [];
+  if (!entity) return respond_(false, 'entity wajib diisi.', null, req);
+  if (!rows.length) return respond_(true, 'Batch kosong, tidak ada yang dikirim.', { entity: entity, processed: 0 }, req);
+  var sh = getEntitySheet_(ss, entity);
+  var mapper = getEntityMapper_(entity);
+  if (!sh || !mapper) return respond_(false, 'Entity tidak dikenal.', null, req);
+  withDocumentLock_(function(){
+    upsertByKeySafe_(sh, rows, 'id', mapper);
+    if (entity === 'reports') recalcRecaps_(ss);
+  });
+  appendAudit_(ss.getSheetByName('AuditLog'), 'SYNC_BATCH', entity + ' : ' + rows.length + ' item', req.timestamp || new Date().toISOString());
+  return respond_(true, 'Batch ' + entity + ' berhasil disimpan.', { entity: entity, processed: rows.length }, req);
 }
 function pullAll_(req){
   var ss = SpreadsheetApp.openById(req.sheetId || DEFAULT_CONFIG_.sheetId);
@@ -139,18 +160,49 @@ function readConfig_(sh){
   readRows_(sh).forEach(function(r){ if (r[0]) cfg[String(r[0])] = String(r[1] || ''); });
   return cfg;
 }
-function upsertByKey_(sh, items, keyField, mapper){
+function upsertByKey_(sh, items, keyField, mapper){ return upsertByKeySafe_(sh, items, keyField, mapper); }
+function upsertByKeySafe_(sh, items, keyField, mapper){
   if (!items || !items.length) return;
-  var data = sh.getDataRange().getValues();
-  var map = {};
-  for (var i = 1; i < data.length; i++) map[String(data[i][0] || '')] = i + 1;
-  items.forEach(function(item){
-    var key = String(item[keyField] || '');
-    if (!key) return;
-    var row = mapper(item);
-    if (map[key]) sh.getRange(map[key], 1, 1, row.length).setValues([row]);
-    else sh.appendRow(row);
+  retrySheetOp_(function(){
+    var data = sh.getDataRange().getValues();
+    var map = {};
+    for (var i = 1; i < data.length; i++) map[String(data[i][0] || '')] = i + 1;
+    items.forEach(function(item){
+      var key = String(item[keyField] || '');
+      if (!key) return;
+      var row = mapper(item);
+      if (map[key]) sh.getRange(map[key], 1, 1, row.length).setValues([row]);
+      else sh.appendRow(row);
+    });
   });
+}
+function retrySheetOp_(fn){
+  var lastErr = null;
+  for (var i = 0; i < 3; i++) {
+    try { return fn(); } catch (err) { lastErr = err; Utilities.sleep(250 * (i + 1)); }
+  }
+  throw lastErr;
+}
+function withDocumentLock_(fn){
+  var lock = LockService.getDocumentLock();
+  lock.waitLock(20000);
+  try { return fn(); } finally { try { lock.releaseLock(); } catch (e) {} }
+}
+function getEntitySheet_(ss, entity){
+  if (entity === 'users') return ss.getSheetByName('Users');
+  if (entity === 'estates') return ss.getSheetByName('MasterEstateDivisi');
+  if (entity === 'peserta') return ss.getSheetByName('MasterPeserta');
+  if (entity === 'mentors') return ss.getSheetByName('MasterMentor');
+  if (entity === 'reports') return ss.getSheetByName('LaporanHarian');
+  return null;
+}
+function getEntityMapper_(entity){
+  if (entity === 'users') return userToRow_;
+  if (entity === 'estates') return estateToRow_;
+  if (entity === 'peserta') return pesertaToRow_;
+  if (entity === 'mentors') return mentorToRow_;
+  if (entity === 'reports') return reportToRow_;
+  return null;
 }
 function readRows_(sh){ if (!sh || sh.getLastRow() < 2) return []; return sh.getRange(2,1,sh.getLastRow()-1,sh.getLastColumn()).getValues(); }
 function readUsers_(sh){ return readRows_(sh).map(function(r){ return { id:r[0], nip:r[1], name:r[2], role:r[3], estate:r[4], divisi:String(r[5]||''), pin:r[6], active:toBool_(r[7]), createdAt:r[8], updatedAt:r[9], synced:true }; }); }
