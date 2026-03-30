@@ -8,6 +8,7 @@
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
   <link rel="stylesheet" href="./styles.css" />
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.2/dist/chart.umd.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/jspdf@2.5.1/dist/jspdf.umd.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/jspdf-autotable@3.8.2/dist/jspdf.plugin.autotable.min.js"></script>
@@ -19,7 +20,7 @@
         <div class="brand-badge">SP</div>
         <div>
           <h1>Aplikasi Sekolah Pemanen</h1>
-          <p>Database lokal + Google Sheets • Tema oranye • Login PIN</p>
+          <p>Local First • Login PIN</p>
         </div>
       </div>
       <div class="topbar-actions">
@@ -43,11 +44,11 @@
 
     <nav class="tabs" id="mainTabs">
       <button class="tab active" data-tab="dashboard" type="button">Dashboard</button>
-      <button class="tab auth-only" data-tab="master" type="button">Master Data</button>
+      <button class="tab auth-only admin-only" data-tab="master" type="button">Master Data</button>
       <button class="tab auth-only" data-tab="laporan" type="button">Laporan</button>
       <button class="tab auth-only" data-tab="rekap" type="button">Rekap & WA</button>
       <button class="tab auth-only" data-tab="database" type="button">Database</button>
-      <button class="tab auth-only" data-tab="pengaturan" type="button">Pengaturan</button>
+      <button class="tab auth-only admin-only" data-tab="pengaturan" type="button">Pengaturan</button>
     </nav>
 
     <main>
@@ -77,37 +78,35 @@
           </div>
         </div>
 
+        <div class="grid cols-2">
+          <div class="card chart-card">
+            <div class="card-title">Tren Laporan 7 Hari</div>
+            <canvas id="chartReports"></canvas>
+          </div>
+          <div class="card chart-card">
+            <div class="card-title">Hadir vs Tidak Hadir per Divisi</div>
+            <canvas id="chartAttendance"></canvas>
+          </div>
+        </div>
 
-        <div class="grid cols-2 admin-kpi" id="adminKpiWrap">
-          <div class="card">
-            <div class="card-title">Dashboard KPI Management</div>
-            <div class="stats-grid">
-              <div class="stat-box"><span>Estate Aktif</span><strong id="kpiEstateCount">0</strong></div>
-              <div class="stat-box"><span>Divisi Aktif</span><strong id="kpiDivisiCount">0</strong></div>
-              <div class="stat-box"><span>Rata-rata Hadir/Laporan</span><strong id="kpiAvgHadir">0</strong></div>
-              <div class="stat-box"><span>Rasio Tidak Hadir</span><strong id="kpiAbsenceRate">0%</strong></div>
+        <div class="card chart-card">
+          <div class="card-title">Distribusi Laporan per Estate</div>
+          <canvas id="chartEstate"></canvas>
+        </div>
+
+        <section id="adminKpiSection" class="hidden">
+          <div class="grid cols-2">
+            <div class="card">
+              <div class="card-title">Dashboard KPI Management</div>
+              <div id="kpiStats" class="stats-grid"></div>
+              <div id="kpiDetails" class="info-list top-gap"></div>
             </div>
-            <div class="info-list" id="kpiManagementList"></div>
+            <div class="card">
+              <div class="card-title">Peringkat Estate / Divisi</div>
+              <div id="kpiRanking" class="list-wrap"></div>
+            </div>
           </div>
-          <div class="card">
-            <div class="card-title">Peringkat Estate / Divisi</div>
-            <div id="kpiRankingList" class="list-wrap"></div>
-          </div>
-        </div>
-
-        <div class="card" id="monthlyWrap">
-          <div class="card-title">Rekap Bulanan per Estate / Divisi</div>
-          <div class="grid cols-3">
-            <div class="field"><label for="monthlyMonth">Bulan</label><input id="monthlyMonth" type="month" /></div>
-            <div class="field"><label for="monthlyEstate">Estate</label><input id="monthlyEstate" type="text" placeholder="Kosong = semua scope" /></div>
-            <div class="field"><label for="monthlyDivisi">Divisi</label><input id="monthlyDivisi" type="text" placeholder="Contoh 3" /></div>
-          </div>
-          <div class="actions">
-            <button class="btn accent" id="btnGenerateMonthly" type="button">Generate Rekap Bulanan</button>
-            <button class="btn secondary" id="btnCopyMonthly" type="button">Copy Rekap</button>
-          </div>
-          <textarea id="monthlyPreview" rows="12" readonly></textarea>
-        </div>
+        </section>
 
         <div class="card">
           <div class="card-title">Laporan Terbaru</div>
@@ -127,8 +126,8 @@
                   <option value="MANDOR">MANDOR</option>
                   <option value="ASISTEN">ASISTEN</option>
                   <option value="MANAGER">MANAGER</option>
-                  <option value="ADMIN">ADMIN</option>
                   <option value="TC_HEAD">TC_HEAD</option>
+                  <option value="ADMIN">ADMIN</option>
                 </select>
               </div>
               <div class="field"><label for="userEstate">Estate</label><input id="userEstate" type="text" placeholder="BTUE" /></div>
@@ -217,6 +216,7 @@
       <section class="tab-panel" id="laporan">
         <div class="card" id="formCard">
           <div class="card-title">Form Laporan Harian Mandor</div>
+          <input id="editReportId" type="hidden" />
           <div class="grid cols-2">
             <div class="field"><label for="tanggal">Tanggal</label><input id="tanggal" type="date" /></div>
             <div class="field"><label for="hariTeks">Hari</label><input id="hariTeks" type="text" readonly /></div>
@@ -260,8 +260,7 @@
               <select id="rekapRole">
                 <option value="ASISTEN">ASISTEN</option>
                 <option value="MANAGER">MANAGER</option>
-                <option value="ADMIN">ADMIN</option>
-                  <option value="TC_HEAD">TC_HEAD</option>
+                <option value="TC_HEAD">TC_HEAD</option>
               </select>
             </div>
             <div class="field"><label for="rekapEstate">Filter Estate</label><input id="rekapEstate" type="text" placeholder="otomatis sesuai role" /></div>
@@ -281,9 +280,44 @@
             <button class="btn secondary" id="btnCopyRekap" type="button">Copy</button>
           </div>
         </div>
+
+        <div class="card">
+          <div class="card-title">Rekap Bulanan per Estate/Divisi</div>
+          <div class="grid cols-3 compact-grid">
+            <div class="field"><label for="rekapMonth">Bulan Rekap</label><input id="rekapMonth" type="month" /></div>
+            <div class="field"><label for="rekapMonthlyEstate">Filter Estate</label><input id="rekapMonthlyEstate" type="text" placeholder="BTUE atau kosongkan" /></div>
+            <div class="field"><label for="rekapMonthlyDivisi">Filter Divisi</label><input id="rekapMonthlyDivisi" type="text" placeholder="3 atau BTUE3" /></div>
+          </div>
+          <div class="actions">
+            <button class="btn accent" id="btnGenerateMonthlyRecap" type="button">Tampilkan Rekap Bulanan</button>
+            <button class="btn secondary" id="btnExportMonthlyExcel" type="button">Export Rekap Bulanan Excel</button>
+            <button class="btn secondary" id="btnExportMonthlyPdf" type="button">Export Rekap Bulanan PDF</button>
+          </div>
+          <div class="small muted">Rekap bulanan mengikuti scope user aktif. Kartu menampilkan akumulasi laporan per estate/divisi dalam bulan terpilih.</div>
+        </div>
+
+        <div class="card">
+          <div class="card-title">Kartu Rekap Bulanan</div>
+          <div id="monthlyRecapCards" class="list-wrap"></div>
+        </div>
       </section>
 
       <section class="tab-panel" id="database">
+        <div class="card">
+          <div class="card-title">Filter Laporan</div>
+          <div class="grid cols-3 compact-grid">
+            <div class="field"><label for="filterEstate">Estate</label><input id="filterEstate" type="text" placeholder="BTUE" /></div>
+            <div class="field"><label for="filterDivisi">Divisi</label><input id="filterDivisi" type="text" placeholder="3 atau BTUE3" /></div>
+            <div class="field"><label for="filterMandor">Mandor</label><input id="filterMandor" type="text" placeholder="AGUS" /></div>
+            <div class="field"><label for="filterStart">Tanggal Awal</label><input id="filterStart" type="date" /></div>
+            <div class="field"><label for="filterEnd">Tanggal Akhir</label><input id="filterEnd" type="date" /></div>
+            <div class="actions inline-actions align-end">
+              <button class="btn secondary" id="btnApplyFilter" type="button">Terapkan Filter</button>
+              <button class="btn secondary" id="btnClearFilter" type="button">Reset Filter</button>
+            </div>
+          </div>
+        </div>
+
         <div class="card">
           <div class="card-title">Ringkasan Database Lokal</div>
           <div class="stats-grid">
@@ -291,19 +325,6 @@
             <div class="stat-box"><span>Belum Sync</span><strong id="statUnsyncedDb">0</strong></div>
             <div class="stat-box"><span>Role Aktif</span><strong id="statRole">-</strong></div>
             <div class="stat-box"><span>Scope Aktif</span><strong id="statScope">-</strong></div>
-          </div>
-        </div>
-
-
-        <div class="card">
-          <div class="card-title">Filter Riwayat</div>
-          <div class="grid cols-3">
-            <div class="field"><label for="filterEstate">Estate</label><input id="filterEstate" type="text" placeholder="BTUE" /></div>
-            <div class="field"><label for="filterDivisi">Divisi</label><input id="filterDivisi" type="text" placeholder="3" /></div>
-            <div class="field"><label for="filterMandor">Mandor</label><input id="filterMandor" type="text" placeholder="AGUS" /></div>
-            <div class="field"><label for="filterStart">Tanggal Awal</label><input id="filterStart" type="date" /></div>
-            <div class="field"><label for="filterEnd">Tanggal Akhir</label><input id="filterEnd" type="date" /></div>
-            <div class="field"><label>&nbsp;</label><button class="btn secondary" id="btnResetFilter" type="button">Reset Filter</button></div>
           </div>
         </div>
 
@@ -327,6 +348,7 @@
             <button class="btn" id="btnSaveSettings" type="button">Simpan Pengaturan</button>
             <button class="btn secondary" id="btnSetupSheets" type="button">Buat Sheet Otomatis</button>
             <button class="btn secondary" id="btnTestConnection" type="button">Tes Koneksi</button>
+            <button class="btn secondary" id="btnResetApp" type="button">Reset Aplikasi</button>
           </div>
           <div class="result-box" id="settingsResult">-</div>
         </div>
@@ -338,13 +360,13 @@
     <div class="modal-card narrow">
       <button class="close-btn" data-close="loginModal" type="button">×</button>
       <h2>Login PIN</h2>
-      <p class="small muted">Gunakan NIP dan PIN sesuai master user.</p>
+      <p class="small muted">Gunakan NIP dan PIN untuk login Aplikasi.</p>
       <div class="field"><label for="loginNip">NIP</label><input id="loginNip" type="text" /></div>
       <div class="field"><label for="loginPin">PIN</label><input id="loginPin" type="password" maxlength="12" /></div>
       <div class="actions">
         <button class="btn" id="btnDoLogin" type="button">Login</button>
       </div>
-      <div class="small muted">User awal lokal: NIP <strong>TC001</strong> • PIN <strong>1234</strong></div>
+      <div class="small muted" style="display:none;">User awal online/lokal: NIP <strong>TC001</strong> • PIN <strong>1234</strong></div>
     </div>
   </div>
 
