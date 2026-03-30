@@ -26,6 +26,7 @@
       <div class="topbar-actions">
         <button class="icon-btn" id="btnTheme" type="button" title="Ganti tema">🌙</button>
         <div class="status-pill" id="statusPill">Siap</div>
+        <div class="status-pill hidden" id="busyPill">Memproses…</div>
       </div>
     </header>
 
@@ -367,6 +368,19 @@
         <button class="btn" id="btnDoLogin" type="button">Login</button>
       </div>
       <div class="small muted" style="display:none;">User awal online/lokal: NIP <strong>TC001</strong> • PIN <strong>1234</strong></div>
+    </div>
+  </div>
+
+
+  <div class="loading-overlay hidden" id="loadingOverlay" aria-hidden="true">
+    <div class="loading-card">
+      <div class="loading-title" id="loadingTitle">Sedang memproses...</div>
+      <div class="loading-sub" id="loadingSub">Mohon tunggu sebentar.</div>
+      <div class="loading-bar"><div class="loading-bar-fill" id="loadingBarFill"></div></div>
+      <div class="loading-meta">
+        <span id="loadingPercent">0%</span>
+        <span id="loadingStep">Menyiapkan...</span>
+      </div>
     </div>
   </div>
 

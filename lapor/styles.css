@@ -111,3 +111,15 @@ textarea{resize:vertical}
 
 #adminKpiSection .list-wrap{max-height:none;}
 #adminKpiSection .stats-grid{margin-bottom:12px;}
+
+
+.status-pill.busy{background:rgba(249,115,22,.18);}
+.loading-overlay{position:fixed;inset:0;background:rgba(15,23,42,.38);display:flex;align-items:center;justify-content:center;padding:20px;z-index:9999;backdrop-filter:blur(2px);}
+.loading-card{width:min(460px,100%);background:var(--surface);border:1px solid var(--border);border-radius:22px;box-shadow:var(--shadow);padding:22px;}
+.loading-title{font-size:20px;font-weight:800;margin-bottom:6px;color:var(--text);}
+.loading-sub{font-size:14px;color:var(--muted);margin-bottom:14px;}
+.loading-bar{height:14px;border-radius:999px;overflow:hidden;background:var(--surface-2);border:1px solid var(--border);}
+.loading-bar-fill{height:100%;width:0%;background:linear-gradient(135deg,var(--primary),var(--primary-2));transition:width .25s ease;}
+.loading-meta{display:flex;justify-content:space-between;gap:12px;margin-top:10px;font-size:13px;font-weight:700;color:var(--muted);}
+body.is-busy .btn, body.is-busy .icon-btn, body.is-busy .tab{pointer-events:none;opacity:.75;}
+body.is-busy input, body.is-busy textarea, body.is-busy select{pointer-events:none;}

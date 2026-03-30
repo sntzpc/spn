@@ -6,8 +6,8 @@
     sheetId: '1B6KmlUCOKGozN6abEhp7nzpJMMm1BylBA-tKIrGZBSA',
     defaultTheme: 'light'
   };
-  const STORAGE_KEY = 'sp_app_v3';
-  const THEME_KEY = 'sp_theme_v3';
+  const STORAGE_KEY = 'sp_app_v4';
+  const THEME_KEY = 'sp_theme_v4';
   const ADMIN_USER = {
     id: 'USR-TC001', nip: 'TC001', name: 'ADMIN', role: 'ADMIN', estate: '', divisi: '', pin: '1234',
     active: true, createdAt: new Date().toISOString(), updatedAt: new Date().toISOString(), synced: false
@@ -39,7 +39,7 @@
   }
   function openDb(){
     return new Promise((resolve,reject)=>{
-      const req = indexedDB.open('sp_app_db_v1', 1);
+      const req = indexedDB.open('sp_app_db_v2', 1);
       req.onupgradeneeded = ()=>{ const db=req.result; if(!db.objectStoreNames.contains('kv')) db.createObjectStore('kv'); };
       req.onsuccess = ()=> resolve(req.result);
       req.onerror = ()=> reject(req.error || new Error('Gagal membuka IndexedDB.'));
@@ -103,6 +103,45 @@
   function todayISO(){ return new Date().toISOString().slice(0,10); }
   function esc(s){ return String(s||'').replace(/[&<>"']/g,m=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#039;'}[m])); }
   function setStatus(text, kind='info'){ const el=$('#statusPill'); if(!el) return; el.textContent=text; el.style.background = kind==='ok' ? 'rgba(22,163,74,.18)' : kind==='no' ? 'rgba(220,38,38,.18)' : 'rgba(249,115,22,.18)'; }
+  function setBusy(active, title='Sedang memproses...', sub='Mohon tunggu sebentar.', percent=15, step='Menyiapkan...'){
+    const overlay = $('#loadingOverlay');
+    const busyPill = $('#busyPill');
+    if(!overlay || !busyPill) return;
+    document.body.classList.toggle('is-busy', !!active);
+    overlay.classList.toggle('hidden', !active);
+    busyPill.classList.toggle('hidden', !active);
+    busyPill.classList.toggle('busy', !!active);
+    if(active){
+      $('#loadingTitle').textContent = title;
+      $('#loadingSub').textContent = sub;
+      $('#loadingPercent').textContent = `${Math.max(0, Math.min(100, percent|0))}%`;
+      $('#loadingBarFill').style.width = `${Math.max(0, Math.min(100, percent|0))}%`;
+      $('#loadingStep').textContent = step;
+      busyPill.textContent = step;
+    }
+  }
+  function updateBusy(percent, step, sub){
+    if($('#loadingOverlay')?.classList.contains('hidden')) return;
+    if(typeof sub === 'string') $('#loadingSub').textContent = sub;
+    $('#loadingPercent').textContent = `${Math.max(0, Math.min(100, percent|0))}%`;
+    $('#loadingBarFill').style.width = `${Math.max(0, Math.min(100, percent|0))}%`;
+    $('#loadingStep').textContent = step || 'Memproses...';
+    $('#busyPill').textContent = step || 'Memproses...';
+  }
+  async function runBusy(task, cfg={}){
+    const title = cfg.title || 'Sedang memproses...';
+    const sub = cfg.sub || 'Mohon tunggu sebentar.';
+    const startStep = cfg.step || 'Menyiapkan...';
+    setBusy(true, title, sub, cfg.startPercent || 12, startStep);
+    try {
+      const result = await task((p,s,ss)=> updateBusy(p,s,ss));
+      updateBusy(100, cfg.doneStep || 'Selesai', cfg.doneSub || sub);
+      await new Promise(r=>setTimeout(r, 220));
+      return result;
+    } finally {
+      setBusy(false);
+    }
+  }
   function applyTheme(theme){ const t=theme||'light'; document.body.classList.toggle('dark', t==='dark'); localStorage.setItem(THEME_KEY,t); $('#btnTheme').textContent = t==='dark' ? '☀️' : '🌙'; }
   function preferredTheme(){ return localStorage.getItem(THEME_KEY) || State.settings.defaultTheme || 'light'; }
   function openModal(id){ document.getElementById(id)?.classList.add('open'); }
@@ -160,14 +199,17 @@
     const gasUrl = (State.settings.gasUrl || DEFAULT_REMOTE.gasUrl || '').trim();
     if(!gasUrl) throw new Error('GAS URL belum tersedia.');
     const request = { action, sheetId: State.settings.sheetId || DEFAULT_REMOTE.sheetId, ...payload };
-    if (!preferGet) {
+    const requestLen = JSON.stringify(request).length;
+    if (!preferGet || requestLen > 1400) {
       try {
         const res = await fetch(gasUrl, { method:'POST', headers:{'Content-Type':'text/plain;charset=utf-8'}, body: JSON.stringify(request) });
-        const json = await res.json();
+        const raw = await res.text();
+        let json = null;
+        try { json = JSON.parse(raw); } catch { throw new Error(raw || 'Respons server tidak valid.'); }
         if(!json.success) throw new Error(json.message || 'Permintaan gagal.');
         return json;
       } catch (err) {
-        if (JSON.stringify(request).length > 1500) throw err;
+        if (requestLen > 8000) throw err;
       }
     }
     return await jsonpRequest(gasUrl, request);
@@ -176,18 +218,26 @@
     return new Promise((resolve,reject)=>{
       const cb = `jsonp_cb_${Date.now()}_${Math.random().toString(36).slice(2,8)}`;
       const script = document.createElement('script');
-      const timer = setTimeout(()=>{ cleanup(); reject(new Error('JSONP timeout.')); }, 20000);
+      const timer = setTimeout(()=>{ cleanup(); reject(new Error('JSONP timeout.')); }, 25000);
       function cleanup(){ clearTimeout(timer); delete window[cb]; script.remove(); }
       window[cb] = (data)=>{ cleanup(); data && data.success ? resolve(data) : reject(new Error(data?.message || 'JSONP gagal.')); };
       script.onerror = ()=>{ cleanup(); reject(new Error('Gagal memanggil Apps Script via JSONP.')); };
-      script.src = `${url}?data=${encodeURIComponent(JSON.stringify({...payload, callback:cb}))}`;
+      script.async = true;
+      script.referrerPolicy = 'no-referrer';
+      const params = new URLSearchParams();
+      params.set('action', payload.action || '');
+      params.set('sheetId', payload.sheetId || '');
+      params.set('callback', cb);
+      params.set('data', JSON.stringify(payload));
+      params.set('_ts', String(Date.now()));
+      script.src = `${url}?${params.toString()}`;
       document.body.appendChild(script);
     });
   }
 
   async function bootstrapOnline(){
     try {
-      const data = await apiRequest('bootstrap', { profile: { id: currentUser()?.id || '', role: currentUser()?.role || '', estate: currentUser()?.estate || '', divisi: currentUser()?.divisi || '' } }, true);
+      const data = await apiRequest('bootstrap', { profile: { id: currentUser()?.id || '', role: currentUser()?.role || '', estate: currentUser()?.estate || '', divisi: currentUser()?.divisi || '' } }, false);
       if (data.settings) State.settings = { ...State.settings, ...data.settings };
       if (Array.isArray(data.users) && data.users.length) State.users = mergeById(State.users, data.users);
       State.meta.lastBootstrapAt = nowISO();
@@ -199,18 +249,47 @@
     }
   }
 
-  function login(){
+  async function ensureRemoteUsers(progressCb){
+    try {
+      progressCb?.(28, 'Mengecek user di server...', 'Mengambil master user terbaru dari database online.');
+      const data = await apiRequest('bootstrap', { profile: { id:'', role:'ADMIN', estate:'', divisi:'' } }, false);
+      if (data.settings) State.settings = { ...State.settings, ...data.settings };
+      if (Array.isArray(data.users) && data.users.length) {
+        State.users = mergeById(State.users, data.users);
+        saveState(true);
+      }
+    } catch {}
+  }
+
+  async function login(){
     const nip = normalizeCode($('#loginNip').value);
     const pin = String($('#loginPin').value || '').trim();
-    const user = State.users.find(u => normalizeCode(u.nip)===nip && String(u.pin||'')===pin && u.active!==false);
-    if(!user) return setStatus('NIP atau PIN tidak cocok.','no');
-    State.session.isLoggedIn = true;
-    State.session.userId = user.id;
-    saveState();
-    closeModal('loginModal');
-    fillFormDefaults();
-    pullAll().catch(()=>{});
-    setStatus(`Login berhasil sebagai ${user.role}.`,'ok');
+    if(!nip || !pin) return setStatus('NIP dan PIN wajib diisi.','no');
+    const doLogin = async (progress)=>{
+      progress(12, 'Memeriksa data login lokal...', 'Memastikan data user tersedia di perangkat ini.');
+      let user = State.users.find(u => normalizeCode(u.nip)===nip && String(u.pin||'')===pin && u.active!==false);
+      if(!user){
+        await ensureRemoteUsers(progress);
+        progress(55, 'Mencocokkan ulang NIP dan PIN...', 'Membandingkan data terbaru dari server.');
+        user = State.users.find(u => normalizeCode(u.nip)===nip && String(u.pin||'')===pin && u.active!==false);
+      }
+      if(!user) throw new Error('NIP atau PIN tidak cocok. Pastikan data user sudah tersinkron dari server.');
+      progress(72, 'Menyimpan sesi login...', 'Menyiapkan hak akses sesuai role user.');
+      State.session.isLoggedIn = true;
+      State.session.userId = user.id;
+      saveState();
+      closeModal('loginModal');
+      fillFormDefaults();
+      progress(86, 'Menarik data sesuai scope...', 'Mengambil data awal agar tampilan mobile sama dengan desktop.');
+      try { await pullAll(true, progress); } catch {}
+      return user;
+    };
+    try {
+      const user = await runBusy(doLogin, { title:'Login ke aplikasi', sub:'Sedang menyiapkan akses user dan sinkronisasi awal.', step:'Memulai login...', doneStep:'Login selesai' });
+      setStatus(`Login berhasil sebagai ${user.role}.`,'ok');
+    } catch (err) {
+      setStatus(err.message || 'Login gagal.','no');
+    }
   }
   function logout(){ State.session = { isLoggedIn:false, userId:'', deviceId:State.session.deviceId }; saveState(); openModal('loginModal'); setStatus('Logout berhasil.','ok'); }
 
@@ -456,8 +535,8 @@
     ].join('\n');
   }
 
-  async function setupSheets(){ const res = await apiRequest('setupWorkbook', {}, true); $('#settingsResult').textContent = res.message; setStatus(res.message,'ok'); }
-  async function testConnection(){ const res = await apiRequest('testConnection', {}, true); $('#settingsResult').textContent = `${res.message} ${res.time||''}`; setStatus('Koneksi berhasil.','ok'); }
+  async function setupSheets(){ const res = await apiRequest('setupWorkbook', {}, false); $('#settingsResult').textContent = res.message; setStatus(res.message,'ok'); }
+  async function testConnection(){ const res = await apiRequest('testConnection', {}, false); $('#settingsResult').textContent = `${res.message} ${res.time||''}`; setStatus('Koneksi berhasil.','ok'); }
   async function saveSettingsRemote(){
     if(!isAdmin()) return setStatus('Hanya ADMIN yang dapat mengubah pengaturan.','no');
     State.settings = { gasUrl: ($('#gasUrl').value||'').trim() || DEFAULT_REMOTE.gasUrl, sheetId: ($('#sheetId').value||'').trim() || DEFAULT_REMOTE.sheetId, defaultTheme: $('#defaultTheme').value || 'light' };
@@ -466,25 +545,43 @@
     catch(err){ $('#settingsResult').textContent = err.message; setStatus(err.message,'no'); }
     renderAll();
   }
-  async function syncAll(){
+  async function syncAll(silent=false, progressCb){
     if(!isLoggedIn()) return setStatus('Login dahulu.','no');
-    const payload = { users: State.users, estates: State.estates, peserta: State.peserta, mentors: State.mentors, reports: State.reports, settings: State.settings, timestamp: nowISO() };
-    const res = await apiRequest('syncAll', payload);
-    ['users','estates','peserta','mentors','reports'].forEach(key => State[key].forEach(x => { x.synced = true; x.syncedAt = nowISO(); }));
-    saveState(); setStatus(res.message || 'Sync berhasil.','ok');
+    const job = async (progress)=>{
+      const user = currentUser();
+      progress(14, 'Menyiapkan paket sync...', `Mengumpulkan data ${user?.role || ''} dari perangkat ini.`);
+      const payload = { users: State.users, estates: State.estates, peserta: State.peserta, mentors: State.mentors, reports: State.reports, settings: State.settings, timestamp: nowISO() };
+      progress(44, 'Mengirim data ke server...', 'Jangan tutup halaman sampai proses selesai.');
+      const res = await apiRequest('syncAll', payload, false);
+      progress(78, 'Menandai data lokal sudah sinkron...', 'Memperbarui status sync pada perangkat.');
+      ['users','estates','peserta','mentors','reports'].forEach(key => State[key].forEach(x => { x.synced = true; x.syncedAt = nowISO(); }));
+      saveState();
+      return res;
+    };
+    const res = silent ? await job(progressCb || (()=>{})) : await runBusy(job, { title:'Sinkronisasi data', sub:'Data lokal sedang dikirim ke database online.', step:'Memulai sync...', doneStep:'Sync selesai' });
+    setStatus(res.message || 'Sync berhasil.','ok');
+    return res;
   }
-  async function pullAll(){
+  async function pullAll(silent=false, progressCb){
     if(!isLoggedIn()) return setStatus('Login dahulu.','no');
-    const user = currentUser();
-    const res = await apiRequest('pullAll', { profile: { id:user.id, role:user.role, estate:user.estate, divisi:user.divisi } }, true);
-    if(res.settings) State.settings = { ...State.settings, ...res.settings };
-    if(Array.isArray(res.users)) State.users = mergeById(State.users, res.users);
-    if(Array.isArray(res.estates)) State.estates = mergeById(State.estates, res.estates);
-    if(Array.isArray(res.peserta)) State.peserta = mergeById(State.peserta, res.peserta);
-    if(Array.isArray(res.mentors)) State.mentors = mergeById(State.mentors, res.mentors);
-    if(Array.isArray(res.reports)) State.reports = mergeById(State.reports, res.reports);
-    State.meta.lastPullAt = nowISO();
-    saveState(); setStatus('Data terbaru berhasil ditarik.','ok');
+    const job = async (progress)=>{
+      const user = currentUser();
+      progress(12, 'Meminta data dari server...', 'Mengambil data sesuai role dan scope user.');
+      const res = await apiRequest('pullAll', { profile: { id:user.id, role:user.role, estate:user.estate, divisi:user.divisi } }, false);
+      progress(56, 'Menggabungkan data server ke lokal...', 'Mencegah duplikasi dan menjaga data yang sudah ada.');
+      if(res.settings) State.settings = { ...State.settings, ...res.settings };
+      if(Array.isArray(res.users)) State.users = mergeById(State.users, res.users);
+      if(Array.isArray(res.estates)) State.estates = mergeById(State.estates, res.estates);
+      if(Array.isArray(res.peserta)) State.peserta = mergeById(State.peserta, res.peserta);
+      if(Array.isArray(res.mentors)) State.mentors = mergeById(State.mentors, res.mentors);
+      if(Array.isArray(res.reports)) State.reports = mergeById(State.reports, res.reports);
+      State.meta.lastPullAt = nowISO();
+      saveState();
+      return res;
+    };
+    const res = silent ? await job(progressCb || (()=>{})) : await runBusy(job, { title:'Menarik data terbaru', sub:'Data terbaru sedang ditarik dari database online.', step:'Memulai pull...', doneStep:'Pull selesai' });
+    setStatus('Data terbaru berhasil ditarik.','ok');
+    return res;
   }
 
   function filteredReports(){
@@ -837,7 +934,7 @@ Lokasi: ${esc(r.lokasi)}</div>
     $('#btnGenerateMonthlyRecap').addEventListener('click', ()=>{ renderMonthlyRecap(); setStatus('Rekap bulanan ditampilkan.','ok'); });
     $('#btnExportMonthlyExcel').addEventListener('click', exportMonthlyExcel);
     $('#btnExportMonthlyPdf').addEventListener('click', exportMonthlyPdf);
-    $('#btnSaveSettings').addEventListener('click', saveSettingsRemote); $('#btnSetupSheets').addEventListener('click', ()=> setupSheets().catch(err => $('#settingsResult').textContent = err.message)); $('#btnTestConnection').addEventListener('click', ()=> testConnection().catch(err => $('#settingsResult').textContent = err.message));
+    $('#btnSaveSettings').addEventListener('click', ()=> runBusy(()=>saveSettingsRemote(), { title:'Menyimpan pengaturan', sub:'Pengaturan koneksi sedang disimpan ke database online.', step:'Menyimpan pengaturan...', doneStep:'Pengaturan tersimpan' }).catch(err => { $('#settingsResult').textContent = err.message; setStatus(err.message,'no'); })); $('#btnSetupSheets').addEventListener('click', ()=> runBusy(()=>setupSheets(), { title:'Menyiapkan sheet online', sub:'Sheet dan header sedang dicek pada spreadsheet tujuan.', step:'Mengecek workbook...', doneStep:'Sheet siap' }).catch(err => { $('#settingsResult').textContent = err.message; setStatus(err.message,'no'); })); $('#btnTestConnection').addEventListener('click', ()=> runBusy(()=>testConnection(), { title:'Menguji koneksi', sub:'Sedang mencoba koneksi ke Apps Script.', step:'Menghubungi server...', doneStep:'Koneksi berhasil' }).catch(err => { $('#settingsResult').textContent = err.message; setStatus(err.message,'no'); }));
     $('#btnSync').addEventListener('click', ()=> syncAll().catch(err => setStatus(err.message,'no'))); $('#btnPull').addEventListener('click', ()=> pullAll().catch(err => setStatus(err.message,'no')));
     $('#btnApplyFilter').addEventListener('click', renderDb); $('#btnClearFilter').addEventListener('click', ()=>{ ['filterEstate','filterDivisi','filterMandor','filterStart','filterEnd'].forEach(id=>$('#'+id).value=''); renderDb(); });
     $('#btnResetApp')?.addEventListener('click', resetApplication); ['rekapMonth','rekapMonthlyEstate','rekapMonthlyDivisi'].forEach(id=>$('#'+id)?.addEventListener('change', renderMonthlyRecap));

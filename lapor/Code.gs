@@ -13,6 +13,11 @@ function handleRequest_(e){
   try {
     if (e && e.parameter && e.parameter.data) req = JSON.parse(e.parameter.data);
     else if (e && e.postData && e.postData.contents) req = JSON.parse(e.postData.contents);
+    if (e && e.parameter) {
+      Object.keys(e.parameter).forEach(function(k){
+        if (k !== 'data' && k !== 'callback' && (req[k] == null || req[k] === '')) req[k] = e.parameter[k];
+      });
+    }
     if (e && e.parameter && e.parameter.callback) req.callback = String(e.parameter.callback);
     switch (String(req.action || '')) {
       case 'bootstrap': return bootstrap_(req);
