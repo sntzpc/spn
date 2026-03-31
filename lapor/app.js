@@ -6,8 +6,8 @@
     sheetId: '1B6KmlUCOKGozN6abEhp7nzpJMMm1BylBA-tKIrGZBSA',
     defaultTheme: 'light'
   };
-  const STORAGE_KEY = 'sp_app_v5';
-  const THEME_KEY = 'sp_theme_v5';
+  const STORAGE_KEY = 'sp_app_v6';
+  const THEME_KEY = 'sp_theme_v6';
   const ADMIN_USER = {
     id: 'USR-TC001', nip: 'TC001', name: 'ADMIN', role: 'ADMIN', estate: '', divisi: '', pin: '1234',
     active: true, createdAt: new Date().toISOString(), updatedAt: new Date().toISOString(), synced: false
@@ -34,12 +34,12 @@
       peserta: Array.isArray(parsed?.peserta) ? parsed.peserta : [],
       mentors: Array.isArray(parsed?.mentors) ? parsed.mentors : [],
       reports: Array.isArray(parsed?.reports) ? parsed.reports : [],
-      meta: { lastBootstrapAt:'', lastPullAt:'', failedSyncQueue: [], ...((parsed && parsed.meta) || {}) }
+      meta: { lastBootstrapAt:'', lastPullAt:'', failedSyncQueue: [], settingsDirty:false, ...((parsed && parsed.meta) || {}) }
     };
   }
   function openDb(){
     return new Promise((resolve,reject)=>{
-      const req = indexedDB.open('sp_app_db_v3', 1);
+      const req = indexedDB.open('sp_app_db_v4', 1);
       req.onupgradeneeded = ()=>{ const db=req.result; if(!db.objectStoreNames.contains('kv')) db.createObjectStore('kv'); };
       req.onsuccess = ()=> resolve(req.result);
       req.onerror = ()=> reject(req.error || new Error('Gagal membuka IndexedDB.'));
@@ -98,7 +98,7 @@
     try { localStorage.removeItem(STORAGE_KEY); } catch {}
   }
   function uid(prefix){ return `${prefix}-${Math.random().toString(36).slice(2,8).toUpperCase()}-${Date.now().toString(36).toUpperCase()}`; }
-  function getOrCreateDeviceId(){ const k='sp_device_id_v4'; let v=localStorage.getItem(k); if(!v){ v=uid('DEV'); localStorage.setItem(k,v); } return v; }
+  function getOrCreateDeviceId(){ const k='sp_device_id_v5'; let v=localStorage.getItem(k); if(!v){ v=uid('DEV'); localStorage.setItem(k,v); } return v; }
   function sleep(ms){ return new Promise(r=>setTimeout(r, ms)); }
   function failedQueue(){ return Array.isArray(State.meta?.failedSyncQueue) ? State.meta.failedSyncQueue : (State.meta.failedSyncQueue = []); }
   function upsertFailedSync(item){
@@ -218,8 +218,8 @@
     if(!gasUrl) throw new Error('GAS URL belum tersedia.');
     const request = { action, sheetId: State.settings.sheetId || DEFAULT_REMOTE.sheetId, ...payload };
     const requestLen = JSON.stringify(request).length;
-    const maxAttempts = action === 'pullAll' ? 2 : 3;
-    const timeoutMs = action === 'pullAll' ? 45000 : 30000;
+    const maxAttempts = action === 'pullAll' ? 2 : (action === 'syncBatch' ? 4 : 3);
+    const timeoutMs = action === 'pullAll' ? 45000 : (action === 'syncBatch' ? 40000 : 30000);
     if (!preferGet || requestLen > 1400) {
       let lastErr = null;
       for(let attempt=1; attempt<=maxAttempts; attempt++){
@@ -565,6 +565,29 @@
   }
 
 
+  function sanitizeForSyncRow(key, row){
+    const base = clone(row || {});
+    delete base.synced;
+    delete base.deleted;
+    if (base.createdBy && typeof base.createdBy === 'object') {
+      base.createdBy = {
+        userId: base.createdBy.userId || '',
+        name: base.createdBy.name || '',
+        role: base.createdBy.role || '',
+        estate: base.createdBy.estate || '',
+        divisi: base.createdBy.divisi || '',
+        nip: base.createdBy.nip || '',
+        deviceId: base.createdBy.deviceId || ''
+      };
+    }
+    if (key === 'reports') {
+      base.hadirCount = Number(base.hadirCount || 0);
+      base.tidakHadirCount = Number(base.tidakHadirCount || 0);
+      base.mentorAktif = Number(base.mentorAktif || 0);
+    }
+    return base;
+  }
+  function sanitizeRowsForSync(key, rows){ return (rows || []).map(row => sanitizeForSyncRow(key, row)); }
   function chunkArray(arr, size){ const out=[]; for(let i=0;i<arr.length;i+=size) out.push(arr.slice(i,i+size)); return out; }
   function collectPendingByKey(key, onlyFailed=false){
     const rows = getStateCollection(key);
@@ -587,22 +610,36 @@
   }
   async function syncDatasetBatches(key, rows, progress, startPct, endPct){
     if(!rows.length) return { success:0, failed:0 };
-    const chunks = chunkArray(rows, key === 'reports' ? 25 : 50);
+    const prepared = sanitizeRowsForSync(key, rows);
+    const chunkSize = key === 'reports' ? 8 : 15;
+    const chunks = chunkArray(prepared, chunkSize);
     let success=0, failed=0;
     for(let i=0;i<chunks.length;i++){
       const part = chunks[i];
       const pct = startPct + Math.round(((i+1)/chunks.length) * Math.max(1, endPct - startPct));
-      progress(pct, `Mengirim ${labelForKey(key)} batch ${i+1}/${chunks.length}...`, 'Koneksi lemah akan dicoba ulang otomatis per batch.');
+      progress(pct, `Mengirim ${labelForKey(key)} batch ${i+1}/${chunks.length}...`, 'Koneksi lemah akan dicoba ulang otomatis. Bila satu batch gagal, sistem memecahnya per item.');
       try {
         await apiRequest('syncBatch', { entity: key, rows: part, timestamp: nowISO() }, false);
         markRowsSynced(key, part);
         success += part.length;
       } catch(err){
-        markRowsFailed(key, part, err);
-        failed += part.length;
+        for (let j=0;j<part.length;j++) {
+          const single = part[j];
+          try {
+            progress(Math.min(endPct, pct), `Ulang per item ${j+1}/${part.length}...`, 'Batch gagal, sistem sedang memecah sinkronisasi menjadi item kecil.');
+            await apiRequest('syncBatch', { entity: key, rows: [single], timestamp: nowISO() }, false);
+            markRowsSynced(key, [single]);
+            success += 1;
+          } catch(singleErr) {
+            markRowsFailed(key, [single], singleErr);
+            failed += 1;
+          }
+          saveState(true);
+          await sleep(120);
+        }
       }
       saveState(true);
-      await sleep(80);
+      await sleep(120);
     }
     return { success, failed };
   }
@@ -671,8 +708,9 @@
   async function saveSettingsRemote(){
     if(!isAdmin()) return setStatus('Hanya ADMIN yang dapat mengubah pengaturan.','no');
     State.settings = { gasUrl: ($('#gasUrl').value||'').trim() || DEFAULT_REMOTE.gasUrl, sheetId: ($('#sheetId').value||'').trim() || DEFAULT_REMOTE.sheetId, defaultTheme: $('#defaultTheme').value || 'light' };
+    State.meta.settingsDirty = true;
     saveState(true); applyTheme(State.settings.defaultTheme);
-    try { const res = await apiRequest('saveConfig', { settings: State.settings }); $('#settingsResult').textContent = res.message; setStatus('Pengaturan disimpan ke database online.','ok'); }
+    try { const res = await apiRequest('saveConfig', { settings: State.settings }); State.meta.settingsDirty = false; saveState(true); $('#settingsResult').textContent = res.message; setStatus('Pengaturan disimpan ke database online.','ok'); }
     catch(err){ $('#settingsResult').textContent = err.message; setStatus(err.message,'no'); }
     renderAll();
   }
@@ -682,7 +720,9 @@
       const datasets = ['users','estates','peserta','mentors','reports'];
       let totalSuccess = 0, totalFailed = 0;
       progress(8, 'Menyiapkan sinkronisasi...', 'Data akan dikirim bertahap per batch agar lebih aman di mobile.');
-      try { await apiRequest('saveConfig', { settings: State.settings }, false); } catch {}
+      if(State.meta.settingsDirty){
+        try { await apiRequest('saveConfig', { settings: State.settings }, false); State.meta.settingsDirty = false; saveState(true); } catch {}
+      }
       for(let i=0;i<datasets.length;i++){
         const key = datasets[i];
         const rows = collectPendingByKey(key, false);

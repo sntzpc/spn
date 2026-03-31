@@ -36,7 +36,7 @@ function handleRequest_(e){
 }
 
 function bootstrap_(req){
-  var ss = SpreadsheetApp.openById(DEFAULT_CONFIG_.sheetId);
+  var ss = SpreadsheetApp.openById(req.sheetId || DEFAULT_CONFIG_.sheetId);
   ensureSheets_(ss);
   ensureAdminUser_(ss.getSheetByName('Users'));
   var settings = readConfig_(ss.getSheetByName('Config'));
@@ -62,7 +62,7 @@ function syncAll_(req){
   var ss = SpreadsheetApp.openById(req.sheetId || DEFAULT_CONFIG_.sheetId);
   ensureSheets_(ss);
   ensureAdminUser_(ss.getSheetByName('Users'));
-  withDocumentLock_(function(){
+  withWriteLock_(function(){
     if (req.settings) saveConfigMap_(ss.getSheetByName('Config'), req.settings);
     upsertByKeySafe_(ss.getSheetByName('Users'), req.users || [], 'id', userToRow_);
     upsertByKeySafe_(ss.getSheetByName('MasterEstateDivisi'), req.estates || [], 'id', estateToRow_);
@@ -79,13 +79,13 @@ function syncBatch_(req){
   ensureSheets_(ss);
   ensureAdminUser_(ss.getSheetByName('Users'));
   var entity = String(req.entity || '');
-  var rows = Array.isArray(req.rows) ? req.rows : [];
+  var rows = Array.isArray(req.rows) ? req.rows.slice(0, 25) : [];
   if (!entity) return respond_(false, 'entity wajib diisi.', null, req);
   if (!rows.length) return respond_(true, 'Batch kosong, tidak ada yang dikirim.', { entity: entity, processed: 0 }, req);
   var sh = getEntitySheet_(ss, entity);
   var mapper = getEntityMapper_(entity);
   if (!sh || !mapper) return respond_(false, 'Entity tidak dikenal.', null, req);
-  withDocumentLock_(function(){
+  withWriteLock_(function(){
     upsertByKeySafe_(sh, rows, 'id', mapper);
     if (entity === 'reports') recalcRecaps_(ss);
   });
@@ -162,30 +162,72 @@ function readConfig_(sh){
 }
 function upsertByKey_(sh, items, keyField, mapper){ return upsertByKeySafe_(sh, items, keyField, mapper); }
 function upsertByKeySafe_(sh, items, keyField, mapper){
-  if (!items || !items.length) return;
+  if (!items || !items.length) return { processed:0 };
   retrySheetOp_(function(){
-    var data = sh.getDataRange().getValues();
-    var map = {};
-    for (var i = 1; i < data.length; i++) map[String(data[i][0] || '')] = i + 1;
-    items.forEach(function(item){
-      var key = String(item[keyField] || '');
+    var cleaned = items.filter(function(item){ return item && String(item[keyField] || '').trim(); });
+    if (!cleaned.length) return;
+    var lastRow = sh.getLastRow();
+    var lastCol = sh.getLastColumn();
+    var data = lastRow > 1 ? sh.getRange(2,1,lastRow-1,lastCol).getValues() : [];
+    var rowIndexById = {};
+    for (var i = 0; i < data.length; i++) {
+      var id = String(data[i][0] || '').trim();
+      if (id) rowIndexById[id] = i + 2;
+    }
+    var updateRows = [];
+    var appendRows = [];
+    cleaned.forEach(function(item){
+      var key = String(item[keyField] || '').trim();
       if (!key) return;
       var row = mapper(item);
-      if (map[key]) sh.getRange(map[key], 1, 1, row.length).setValues([row]);
-      else sh.appendRow(row);
+      if (rowIndexById[key]) updateRows.push({ rowNumber: rowIndexById[key], values: row });
+      else appendRows.push(row);
     });
+    updateRows.sort(function(a,b){ return a.rowNumber - b.rowNumber; });
+    var start = null, block = [];
+    function flushBlock(){
+      if (!block.length || start == null) return;
+      sh.getRange(start, 1, block.length, block[0].length).setValues(block);
+      start = null;
+      block = [];
+    }
+    updateRows.forEach(function(item){
+      if (start == null) {
+        start = item.rowNumber;
+        block = [item.values];
+        return;
+      }
+      var expected = start + block.length;
+      if (item.rowNumber === expected) block.push(item.values);
+      else {
+        flushBlock();
+        start = item.rowNumber;
+        block = [item.values];
+      }
+    });
+    flushBlock();
+    if (appendRows.length) sh.getRange(sh.getLastRow()+1, 1, appendRows.length, appendRows[0].length).setValues(appendRows);
+    SpreadsheetApp.flush();
   });
+  return { processed: items.length };
 }
 function retrySheetOp_(fn){
   var lastErr = null;
-  for (var i = 0; i < 3; i++) {
-    try { return fn(); } catch (err) { lastErr = err; Utilities.sleep(250 * (i + 1)); }
+  for (var i = 0; i < 6; i++) {
+    try { return fn(); } catch (err) { lastErr = err; Utilities.sleep(500 * (i + 1)); }
   }
   throw lastErr;
 }
-function withDocumentLock_(fn){
-  var lock = LockService.getDocumentLock();
-  lock.waitLock(20000);
+function withWriteLock_(fn){
+  var lock = LockService.getScriptLock();
+  var attempts = 0;
+  var acquired = false;
+  while (attempts < 8 && !acquired) {
+    attempts++;
+    try { acquired = lock.tryLock(15000); } catch (err) { acquired = false; }
+    if (!acquired) Utilities.sleep(700 + (attempts * 350));
+  }
+  if (!acquired) throw new Error('Spreadsheet sedang sibuk dipakai proses lain terlalu lama. Silakan sync ulang.');
   try { return fn(); } finally { try { lock.releaseLock(); } catch (e) {} }
 }
 function getEntitySheet_(ss, entity){
@@ -248,7 +290,11 @@ function addAgg_(a, r){ a.jumlahLaporan++; a.hadir += Number(r.hadirCount||0); a
 function splitList_(s){ return String(s||'').split(/[;,\n]+/).map(function(x){ return x.trim(); }).filter(Boolean); }
 function pushUniq_(arr, vals){ vals.forEach(function(v){ if (arr.indexOf(v) === -1) arr.push(v); }); }
 function clearData_(sh){ if (sh.getLastRow() > 1) sh.getRange(2,1,sh.getLastRow()-1,sh.getLastColumn()).clearContent(); }
-function appendAudit_(sh, action, message, ts){ sh.appendRow([ts || new Date().toISOString(), action, message]); }
+function appendAudit_(sh, action, message, ts){
+  if (!sh) return;
+  var row = [ts || new Date().toISOString(), action, message];
+  retrySheetOp_(function(){ sh.getRange(sh.getLastRow()+1, 1, 1, row.length).setValues([row]); });
+}
 
 function isSuper_(role){ role = String(role || '').toUpperCase(); return role === 'ADMIN' || role === 'TC_HEAD'; }
 function canSeeMaster_(item, profile){
