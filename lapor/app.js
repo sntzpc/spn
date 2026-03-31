@@ -176,7 +176,75 @@
   function fmtShortDate(iso){ if(!iso) return ''; return new Intl.DateTimeFormat('id-ID',{day:'2-digit',month:'short',year:'numeric'}).format(new Date(`${iso}T00:00:00`)); }
   function monthLabel(ym){ if(!ym) return ''; const [y,m]=String(ym).split('-'); return new Intl.DateTimeFormat('id-ID',{month:'long',year:'numeric'}).format(new Date(Number(y), Number(m||1)-1, 1)).replace(/^(.)/,m=>m.toUpperCase()); }
   function unique(arr){ return [...new Set(arr.filter(Boolean))]; }
-  function splitVals(v){ return unique(String(v||'').split(/[;,\n]+/).map(x=>x.trim()).filter(Boolean)); }
+  function normTextToken(v){
+    return String(v||'')
+      .toLowerCase()
+      .normalize('NFKD').replace(/[\u0300-\u036f]/g,'')
+      .replace(/[“”"'`]+/g,'')
+      .replace(/\bdan\b/g,' ')
+      .replace(/[^a-z0-9\s-]/g,' ')
+      .replace(/\s+/g,' ')
+      .trim();
+  }
+  function titleCaseText(v){
+    return String(v||'').toLowerCase().replace(/(^|\s)([a-zà-ÿ])/g, (_,a,b)=>`${a}${b.toUpperCase()}`);
+  }
+  function cleanupPhrase(v, mode='text'){
+    let s = String(v||'').replace(/\s+/g,' ').trim();
+    if(!s) return '';
+    if(mode==='nameList') return s.split(',').map(x=>x.trim()).filter(Boolean).map(titleCaseText).join(', ');
+    if(mode==='location') return s.toUpperCase().replace(/\s+/g,' ');
+    if(mode==='topic') return s.toLowerCase();
+    return s.charAt(0).toUpperCase() + s.slice(1);
+  }
+  function splitVals(v, mode='text'){
+    const seen = new Set();
+    const out = [];
+    String(v||'').split(/[;,\n]+/).map(x=>cleanupPhrase(x, mode)).filter(Boolean).forEach(x=>{
+      const key = normTextToken(x);
+      if(!key || seen.has(key)) return;
+      seen.add(key);
+      out.push(x);
+    });
+    return out;
+  }
+  function uniqueNormalized(values, mode='text'){
+    const seen = new Set();
+    const out = [];
+    values.forEach(v=>{
+      const cleaned = cleanupPhrase(v, mode);
+      const key = normTextToken(cleaned);
+      if(!cleaned || !key || seen.has(key)) return;
+      seen.add(key);
+      out.push(cleaned);
+    });
+    return out;
+  }
+  function countNormalized(values, mode='text'){
+    const map = new Map();
+    values.forEach(v=>{
+      const cleaned = cleanupPhrase(v, mode);
+      const key = normTextToken(cleaned);
+      if(!cleaned || !key) return;
+      if(!map.has(key)) map.set(key, { label: cleaned, count: 0, firstIndex: map.size });
+      map.get(key).count += 1;
+    });
+    return Array.from(map.values());
+  }
+  function topCountedLabels(values, mode='text', limit=5){
+    return countNormalized(values, mode)
+      .sort((a,b)=> (b.count-a.count) || a.firstIndex-b.firstIndex || String(a.label).localeCompare(String(b.label), 'id'))
+      .slice(0, limit)
+      .map(x=>x.label);
+  }
+  function countedNamesAlpha(values, limit=999){
+    return countNormalized(values, 'nameList')
+      .sort((a,b)=> String(a.label).localeCompare(String(b.label), 'id') || (b.count-a.count))
+      .slice(0, limit)
+      .map(x=> `${x.label} (${x.count})`);
+  }
+  function averageRounded(total, count){ return count ? Math.round((Number(total||0) / count) * 10) / 10 : 0; }
+  function fmtAvg(v){ return Number.isInteger(v) ? String(v) : String(v.toFixed(1)).replace(/\.0$/,''); }
 
   function userScopeLabel(u=currentUser()){
     if(!u) return 'Belum login';
@@ -798,21 +866,25 @@
     rows.forEach(r => {
       const key = `${r.estate}|${r.divisi}|${r.divisiCode}`;
       if (!map.has(key)) {
-        map.set(key, { month, estate:r.estate, divisi:r.divisi, divisiCode:r.divisiCode, jumlahLaporan:0, hadir:0, tidakHadir:0, mentorAktif:0, materi:new Set(), lokasi:new Set(), mandor:new Set(), kendala:new Set(), tindakLanjut:new Set(), pesertaBaik:new Set(), pesertaBina:new Set(), tanggal:new Set() });
+        map.set(key, {
+          month, estate:r.estate, divisi:r.divisi, divisiCode:r.divisiCode, jumlahLaporan:0,
+          hadirTotal:0, tidakHadirTotal:0, mentorAktifTotal:0,
+          materi:[], lokasi:[], mandor:[], kendala:[], tindakLanjut:[], pesertaBaik:[], pesertaBina:[], tanggal:[]
+        });
       }
       const a = map.get(key);
       a.jumlahLaporan += 1;
-      a.hadir += Number(r.hadirCount || 0);
-      a.tidakHadir += Number(r.tidakHadirCount || 0);
-      a.mentorAktif += Number(r.mentorAktif || 0);
-      splitVals(r.materi).forEach(v => a.materi.add(v));
-      splitVals(r.lokasi).forEach(v => a.lokasi.add(v));
-      splitVals(r.kendala).forEach(v => a.kendala.add(v));
-      splitVals(r.tindakLanjut).forEach(v => a.tindakLanjut.add(v));
-      splitVals(r.pesertaBaik).forEach(v => a.pesertaBaik.add(v));
-      splitVals(r.pesertaBina).forEach(v => a.pesertaBina.add(v));
-      if (r.mandorName) a.mandor.add(r.mandorName);
-      if (r.tanggal) a.tanggal.add(r.tanggal);
+      a.hadirTotal += Number(r.hadirCount || 0);
+      a.tidakHadirTotal += Number(r.tidakHadirCount || 0);
+      a.mentorAktifTotal += Number(r.mentorAktif || 0);
+      a.materi.push(...splitVals(r.materi, 'topic'));
+      a.lokasi.push(...splitVals(r.lokasi, 'location'));
+      a.kendala.push(...splitVals(r.kendala, 'text'));
+      a.tindakLanjut.push(...splitVals(r.tindakLanjut, 'text'));
+      a.pesertaBaik.push(...splitVals(r.pesertaBaik, 'nameList'));
+      a.pesertaBina.push(...splitVals(r.pesertaBina, 'nameList'));
+      if (r.mandorName) a.mandor.push(cleanupPhrase(r.mandorName, 'nameList'));
+      if (r.tanggal) a.tanggal.push(r.tanggal);
     });
     return Array.from(map.values()).map(a => ({
       month: a.month,
@@ -820,17 +892,17 @@
       divisi: a.divisi,
       divisiCode: a.divisiCode,
       jumlahLaporan: a.jumlahLaporan,
-      hadir: a.hadir,
-      tidakHadir: a.tidakHadir,
-      mentorAktif: a.mentorAktif,
-      materi: Array.from(a.materi),
-      lokasi: Array.from(a.lokasi),
-      mandor: Array.from(a.mandor),
-      kendala: Array.from(a.kendala),
-      tindakLanjut: Array.from(a.tindakLanjut),
-      pesertaBaik: Array.from(a.pesertaBaik),
-      pesertaBina: Array.from(a.pesertaBina),
-      hariLapor: Array.from(a.tanggal).sort()
+      hadir: averageRounded(a.hadirTotal, a.jumlahLaporan),
+      tidakHadir: averageRounded(a.tidakHadirTotal, a.jumlahLaporan),
+      mentorAktif: averageRounded(a.mentorAktifTotal, a.jumlahLaporan),
+      materi: topCountedLabels(a.materi, 'topic', 5),
+      lokasi: uniqueNormalized(a.lokasi, 'location'),
+      mandor: uniqueNormalized(a.mandor, 'nameList'),
+      kendala: topCountedLabels(a.kendala, 'text', 5),
+      tindakLanjut: topCountedLabels(a.tindakLanjut, 'text', 5),
+      pesertaBaik: countedNamesAlpha(a.pesertaBaik),
+      pesertaBina: countedNamesAlpha(a.pesertaBina),
+      hariLapor: uniqueNormalized(a.tanggal).sort()
     })).sort((x,y)=> normalizeCode(x.estate).localeCompare(normalizeCode(y.estate)) || Number(x.divisi||0)-Number(y.divisi||0));
   }
   function renderMonthlyRecap(){
@@ -844,7 +916,7 @@
           <div class="report-title">${esc(monthLabel(month))} • ${esc(r.divisiCode)} • ${esc(r.estate)}</div>
           <div class="chip ok">${esc(String(r.jumlahLaporan))} laporan</div>
         </div>
-        <div class="report-meta">Hadir ${r.hadir} | Tidak hadir ${r.tidakHadir} | Mentor aktif ${r.mentorAktif}</div>
+        <div class="report-meta">Hadir rata-rata ${fmtAvg(r.hadir)} | Tidak hadir rata-rata ${fmtAvg(r.tidakHadir)} | Mentor aktif rata-rata ${fmtAvg(r.mentorAktif)}</div>
         <div class="report-line"><strong>Mandor:</strong> ${esc(r.mandor.join(', ') || '-')}</div>
         <div class="report-line"><strong>Materi:</strong> ${esc(r.materi.join(', ') || '-')}</div>
         <div class="report-line"><strong>Lokasi:</strong> ${esc(r.lokasi.join(', ') || '-')}</div>
@@ -860,7 +932,7 @@
     if(!rows.length) return setStatus('Tidak ada data rekap bulanan untuk diexport.','no');
     const data = rows.map(r => ({
       Bulan: monthLabel(month), Estate: r.estate, Divisi: r.divisi, DivisiCode: r.divisiCode, JumlahLaporan: r.jumlahLaporan,
-      Hadir: r.hadir, TidakHadir: r.tidakHadir, MentorAktif: r.mentorAktif, Mandor: r.mandor.join(', '),
+      HadirRataRata: fmtAvg(r.hadir), TidakHadirRataRata: fmtAvg(r.tidakHadir), MentorAktifRataRata: fmtAvg(r.mentorAktif), Mandor: r.mandor.join(', '),
       Materi: r.materi.join(', '), Lokasi: r.lokasi.join(', '), PesertaBaik: r.pesertaBaik.join(', '), PesertaBina: r.pesertaBina.join(', '),
       Kendala: r.kendala.join('; '), TindakLanjut: r.tindakLanjut.join('; '), HariLapor: r.hariLapor.map(fmtShortDate).join(', ')
     }));
@@ -882,8 +954,8 @@
     doc.text(`Dicetak oleh: ${currentUser()?.name || '-'} (${currentUser()?.role || '-'})`, 14, 29);
     doc.autoTable({
       startY: 35,
-      head: [['Estate','Divisi','Jumlah Laporan','Hadir','Tidak Hadir','Mentor Aktif','Mandor','Materi','Kendala','Tindak Lanjut']],
-      body: rows.map(r => [r.estate, r.divisiCode, r.jumlahLaporan, r.hadir, r.tidakHadir, r.mentorAktif, r.mandor.join(', ') || '-', r.materi.join(', ') || '-', r.kendala.join('; ') || '-', r.tindakLanjut.join('; ') || '-']),
+      head: [['Estate','Divisi','Jumlah Laporan','Hadir Rata-rata','Tidak Hadir Rata-rata','Mentor Aktif Rata-rata','Mandor','Materi','Kendala','Tindak Lanjut']],
+      body: rows.map(r => [r.estate, r.divisiCode, r.jumlahLaporan, fmtAvg(r.hadir), fmtAvg(r.tidakHadir), fmtAvg(r.mentorAktif), r.mandor.join(', ') || '-', r.materi.join(', ') || '-', r.kendala.join('; ') || '-', r.tindakLanjut.join('; ') || '-']),
       styles: { fontSize: 8, cellPadding: 2, overflow:'linebreak' },
       headStyles: { fillColor: [249,115,22] },
       margin: { left: 10, right: 10 }
