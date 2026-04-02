@@ -49,7 +49,7 @@
       <button class="tab auth-only" data-tab="rekap" type="button">Rekap & WA</button>
       <button class="tab auth-only" data-tab="database" type="button">Database</button>
       <button class="tab auth-only" data-tab="gagal-sync" type="button">Gagal Sync</button>
-      <button class="tab auth-only admin-only" data-tab="pengaturan" type="button">Pengaturan</button>
+      <button class="tab auth-only" data-tab="pengaturan" type="button">Pengaturan</button>
     </nav>
 
     <main>
@@ -68,7 +68,7 @@
           </div>
         </div>
 
-        <div class="grid cols-2">
+        <div class="grid cols-2 settings-manage-only">
           <div class="card">
             <div class="card-title">Cakupan Scope</div>
             <div class="info-list" id="scopeInfo"></div>
@@ -79,7 +79,7 @@
           </div>
         </div>
 
-        <div class="grid cols-2">
+        <div class="grid cols-2 settings-manage-only">
           <div class="card chart-card">
             <div class="card-title">Tren Laporan 7 Hari</div>
             <canvas id="chartReports"></canvas>
@@ -96,7 +96,7 @@
         </div>
 
         <section id="adminKpiSection" class="hidden">
-          <div class="grid cols-2">
+          <div class="grid cols-2 settings-manage-only">
             <div class="card">
               <div class="card-title">Dashboard KPI Management</div>
               <div id="kpiStats" class="stats-grid"></div>
@@ -384,7 +384,7 @@
       </section>
 
       <section class="tab-panel" id="pengaturan">
-        <div class="card">
+        <div class="card settings-manage-only">
           <div class="card-title">Pengaturan Sinkronisasi</div>
           <div class="grid cols-2">
             <div class="field full"><label for="gasUrl">GAS Web App URL</label><input id="gasUrl" type="text" placeholder="https://script.google.com/macros/s/.../exec" /></div>
@@ -397,9 +397,12 @@
             <button class="btn" id="btnSaveSettings" type="button">Simpan Pengaturan</button>
             <button class="btn secondary" id="btnSetupSheets" type="button">Buat Sheet Otomatis</button>
             <button class="btn secondary" id="btnTestConnection" type="button">Tes Koneksi</button>
-            <button class="btn secondary" id="btnResetApp" type="button">Reset Aplikasi</button>
           </div>
           <div class="result-box" id="settingsResult">-</div>
+        </div>
+        <div class="card">
+          <button class="btn secondary" id="btnResetApp" type="button">Reset Aplikasi</button>
+          <div class="small muted">Menghapus data lokal, dan akan login ulang.</div>
         </div>
       </section>
     </main>

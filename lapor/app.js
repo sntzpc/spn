@@ -192,6 +192,7 @@
   }
   function hasRole(...roles){ const role=(currentUser()?.role||'').toUpperCase(); return roles.includes(role); }
   function isAdmin(){ return hasRole('ADMIN'); }
+  function canManageSettings(){ return hasRole('ADMIN','TC_HEAD'); }
   function canSeeAll(){ return hasRole('ADMIN','TC_HEAD'); }
   function normalizeCode(v){ return String(v||'').trim().toUpperCase().replace(/\s+/g,''); }
   function parseDivisiCode(code){ const m = normalizeCode(code).match(/^([A-Z]+)(\d+)$/); return m ? { estate:m[1], divisi:m[2] } : { estate:'', divisi:'' }; }
@@ -926,7 +927,7 @@
   async function setupSheets(){ const res = await apiRequest('setupWorkbook', {}, false); $('#settingsResult').textContent = res.message; setStatus(res.message,'ok'); }
   async function testConnection(){ const res = await apiRequest('testConnection', {}, false); $('#settingsResult').textContent = `${res.message} ${res.time||''}`; setStatus('Koneksi berhasil.','ok'); }
   async function saveSettingsRemote(){
-    if(!isAdmin()) return setStatus('Hanya ADMIN yang dapat mengubah pengaturan.','no');
+    if(!canManageSettings()) return setStatus('Hanya ADMIN atau TC_HEAD yang dapat mengubah pengaturan.','no');
     State.settings = { gasUrl: ($('#gasUrl').value||'').trim() || DEFAULT_REMOTE.gasUrl, sheetId: ($('#sheetId').value||'').trim() || DEFAULT_REMOTE.sheetId, defaultTheme: $('#defaultTheme').value || 'light' };
     State.meta.settingsDirty = true;
     saveState(true); applyTheme(State.settings.defaultTheme);
@@ -1178,7 +1179,7 @@
     $('#profileSummary').textContent = user ? `${user.role} • ${user.name} • Scope: ${userScopeLabel(user)}` : 'Belum login';
     $$('.auth-only').forEach(el => el.classList.toggle('hidden-tab', !isLoggedIn()));
     $$('.admin-only').forEach(el => el.classList.toggle('hidden-tab', !isAdmin()));
-    $('#pengaturan').classList.toggle('hidden', !isAdmin());
+    $('#pengaturan').classList.toggle('hidden', !isLoggedIn());
     $('#master').classList.toggle('hidden', !isAdmin());
     $('#btnOpenLogin').classList.toggle('hidden', isLoggedIn());
     $('#btnLogout').classList.toggle('hidden', !isLoggedIn());
@@ -1187,6 +1188,9 @@
     const user = currentUser();
     $('#formCard').classList.toggle('hidden', !(user && hasRole('MANDOR','ADMIN')));
     const masterTab = document.querySelector('[data-tab="master"]'); if(masterTab) masterTab.classList.toggle('hidden-tab', !isAdmin());
+    const settingsAllowed = canManageSettings();
+    $$('.settings-manage-only').forEach(el => el.classList.toggle('hidden', !settingsAllowed));
+    $('#settingsResult').textContent = settingsAllowed ? ($('#settingsResult').textContent || '-') : '-';
     $('#scopeHint').textContent = `Scope aktif: ${userScopeLabel(user)}.`;
     const roleSel = $('#rekapRole');
     roleSel.innerHTML = '';
