@@ -14,7 +14,7 @@
   };
   const DEFAULT_STATE = {
     settings: { ...DEFAULT_REMOTE },
-    session: { isLoggedIn: false, userId: '', deviceId: '' },
+    session: { isLoggedIn: false, userId: '', deviceId: '', loginAt: '', expiresAt: '' },
     users: [ADMIN_USER], estates: [], peserta: [], mentors: [], reports: [], meta: { lastBootstrapAt: '', lastPullAt: '', failedSyncQueue: [] }
   };
 
@@ -23,6 +23,7 @@
   const charts = {};
   let State = clone(DEFAULT_STATE);
   let dbReady = false;
+  const LOGIN_TTL_MS = 3 * 24 * 60 * 60 * 1000;
 
   function clone(v){ return JSON.parse(JSON.stringify(v)); }
   function normalizeState(parsed){
@@ -165,8 +166,30 @@
   function openModal(id){ document.getElementById(id)?.classList.add('open'); }
   function closeModal(id){ document.getElementById(id)?.classList.remove('open'); }
   function copyText(text){ navigator.clipboard.writeText(text||'').then(()=>setStatus('Teks berhasil disalin','ok')).catch(()=>setStatus('Gagal menyalin teks','no')); }
-  function currentUser(){ return State.users.find(u => u.id === State.session.userId) || null; }
-  function isLoggedIn(){ return !!State.session.isLoggedIn && !!currentUser(); }
+  function sessionExpired(){
+    const exp = State.session?.expiresAt ? new Date(State.session.expiresAt).getTime() : 0;
+    return !!exp && Date.now() > exp;
+  }
+  function clearSession(preserveDevice=true){
+    const deviceId = preserveDevice ? (State.session?.deviceId || getOrCreateDeviceId()) : '';
+    State.session = { isLoggedIn:false, userId:'', deviceId, loginAt:'', expiresAt:'' };
+  }
+  function ensureSessionValid(silent=false){
+    if(State.session?.isLoggedIn && sessionExpired()){
+      clearSession(true);
+      saveState(true);
+      if(!silent) setStatus('Sesi login berakhir. Silakan login kembali.','info');
+      return false;
+    }
+    return !!State.session?.isLoggedIn;
+  }
+  function currentUser(){
+    ensureSessionValid(true);
+    return State.users.find(u => u.id === State.session.userId) || null;
+  }
+  function isLoggedIn(){
+    return ensureSessionValid(true) && !!currentUser();
+  }
   function hasRole(...roles){ const role=(currentUser()?.role||'').toUpperCase(); return roles.includes(role); }
   function isAdmin(){ return hasRole('ADMIN'); }
   function canSeeAll(){ return hasRole('ADMIN','TC_HEAD'); }
@@ -189,11 +212,21 @@
   function titleCaseText(v){
     return String(v||'').toLowerCase().replace(/(^|\s)([a-zà-ÿ])/g, (_,a,b)=>`${a}${b.toUpperCase()}`);
   }
+  function normalizeLocationToken(v){
+    let s = String(v||'').trim().toUpperCase().replace(/\s+/g,'');
+    if(!s) return '';
+    const m = s.match(/^([A-Z]+)-?(\d+[A-Z]?)$/);
+    if(m) return `${m[1]}-${m[2]}`;
+    return String(v||'').trim().toUpperCase().replace(/\s+/g,' ');
+  }
+  function normalizeLocationList(v){
+    return uniqueNormalized(String(v||'').split(/[;,\n]+/), 'location').join(', ');
+  }
   function cleanupPhrase(v, mode='text'){
     let s = String(v||'').replace(/\s+/g,' ').trim();
     if(!s) return '';
     if(mode==='nameList') return s.split(',').map(x=>x.trim()).filter(Boolean).map(titleCaseText).join(', ');
-    if(mode==='location') return s.toUpperCase().replace(/\s+/g,' ');
+    if(mode==='location') return normalizeLocationToken(s);
     if(mode==='topic') return s.toLowerCase();
     return s.charAt(0).toUpperCase() + s.slice(1);
   }
@@ -267,7 +300,98 @@
     if(user.role==='MANAGER') return items.filter(x => x.estate===user.estate || x.code===user.estate);
     return items.filter(x => (x.estate===user.estate || x.code===user.estate) && String(x.divisi||'')===String(user.divisi||''));
   }
+
+  const ReportPickerState = { pesertaBaik: [], pesertaBina: [] };
+  function getMultiSelectValues(id){
+    const vals = ReportPickerState[id];
+    if(Array.isArray(vals)) return uniqueNormalized(vals, 'nameList');
+    const el = $('#'+id);
+    if(!el) return [];
+    return Array.from(el.selectedOptions || []).map(opt => cleanupPhrase(opt.value || opt.textContent || '', 'nameList')).filter(Boolean);
+  }
+  function getReportParticipantValues(id){
+    return uniqueNormalized(getMultiSelectValues(id), 'nameList');
+  }
+  function currentFormDivisiScope(){
+    const user = currentUser() || {};
+    const raw = normalizeCode($('#divisiCode')?.value || '');
+    const parsed = parseDivisiCode(raw);
+    if(parsed.estate && parsed.divisi) return parsed;
+    if(user.estate && user.divisi && ['MANDOR','ASISTEN'].includes(user.role)) return { estate:user.estate, divisi:String(user.divisi) };
+    return { estate:'', divisi:'' };
+  }
+  function scopedPesertaForReportForm(){
+    const user = currentUser() || {};
+    const scope = currentFormDivisiScope();
+    let rows = State.peserta.filter(p => p.active !== false);
+    if(!['ADMIN','TC_HEAD'].includes(user.role)) rows = scopedByMaster(rows, user);
+    if(scope.estate && scope.divisi) rows = rows.filter(p => normalizeCode(p.estate)===normalizeCode(scope.estate) && String(p.divisi||'')===String(scope.divisi||''));
+    else if(['ADMIN','TC_HEAD','MANAGER'].includes(user.role)) rows = [];
+    return rows.slice().sort((a,b)=> String(a.name||'').localeCompare(String(b.name||''), 'id'));
+  }
+  function closeParticipantPanels(exceptId=''){
+    ['pesertaBaik','pesertaBina'].forEach(id => {
+      if(id!==exceptId) $('#'+id+'Panel')?.classList.add('hidden');
+    });
+  }
+  function pruneParticipantSelectionsToScope(){
+    const allowed = new Set(scopedPesertaForReportForm().map(r => normTextToken(cleanupPhrase(r.name||'', 'nameList'))));
+    if(!allowed.size){
+      ReportPickerState.pesertaBaik = [];
+      ReportPickerState.pesertaBina = [];
+      return;
+    }
+    ReportPickerState.pesertaBaik = getReportParticipantValues('pesertaBaik').filter(v => allowed.has(normTextToken(v)));
+    ReportPickerState.pesertaBina = getReportParticipantValues('pesertaBina').filter(v => allowed.has(normTextToken(v)) && !ReportPickerState.pesertaBaik.some(x => normTextToken(x)===normTextToken(v)));
+  }
+  function removeParticipantFromField(fieldId, name){
+    ReportPickerState[fieldId] = getReportParticipantValues(fieldId).filter(v => normTextToken(v)!==normTextToken(name));
+    renderPesertaPickers();
+  }
+  function addParticipantToField(fieldId, name){
+    const clean = cleanupPhrase(name || '', 'nameList');
+    if(!clean) return;
+    const otherId = fieldId === 'pesertaBaik' ? 'pesertaBina' : 'pesertaBaik';
+    ReportPickerState[otherId] = getReportParticipantValues(otherId).filter(v => normTextToken(v)!==normTextToken(clean));
+    const mine = getReportParticipantValues(fieldId);
+    if(!mine.some(v => normTextToken(v)===normTextToken(clean))) mine.push(clean);
+    ReportPickerState[fieldId] = uniqueNormalized(mine, 'nameList');
+    renderPesertaPickers();
+  }
+  function renderParticipantPicker(fieldId){
+    const selectedWrap = $('#'+fieldId+'Selected');
+    const panel = $('#'+fieldId+'Panel');
+    const list = $('#'+fieldId+'List');
+    const searchEl = $('#'+fieldId+'Search');
+    if(!selectedWrap || !panel || !list || !searchEl) return;
+    const selected = getReportParticipantValues(fieldId);
+    ReportPickerState[fieldId] = selected;
+    const otherId = fieldId === 'pesertaBaik' ? 'pesertaBina' : 'pesertaBaik';
+    const blocked = new Set(getReportParticipantValues(otherId).map(v => normTextToken(v)));
+    selectedWrap.innerHTML = selected.length
+      ? selected.map(name => `<span class="picker-chip">${esc(name)} <button type="button" data-remove-field="${fieldId}" data-name="${esc(name)}" aria-label="Hapus ${esc(name)}">×</button></span>`).join('')
+      : `<div class="picker-empty">Belum ada peserta dipilih.</div>`;
+    const kw = normTextToken(searchEl.value || '');
+    const available = scopedPesertaForReportForm().map(row => cleanupPhrase(row.name || '', 'nameList')).filter(Boolean)
+      .filter(name => !selected.some(v => normTextToken(v)===normTextToken(name)))
+      .filter(name => !blocked.has(normTextToken(name)))
+      .filter(name => !kw || normTextToken(name).includes(kw));
+    list.innerHTML = available.length
+      ? available.map(name => `<button type="button" class="picker-option" data-add-field="${fieldId}" data-name="${esc(name)}"><span>${esc(name)}</span><span class="meta">Tambah</span></button>`).join('')
+      : `<div class="picker-muted">Tidak ada peserta yang bisa dipilih.</div>`;
+  }
+  function renderPesertaPickers(opts={}){
+    if(opts.prune !== false) pruneParticipantSelectionsToScope();
+    renderParticipantPicker('pesertaBaik');
+    renderParticipantPicker('pesertaBina');
+  }
+  function setReportParticipantValues(baikVals, binaVals){
+    ReportPickerState.pesertaBaik = uniqueNormalized(baikVals || [], 'nameList');
+    ReportPickerState.pesertaBina = uniqueNormalized((binaVals || []).filter(v => !ReportPickerState.pesertaBaik.some(x => normTextToken(x)===normTextToken(v))), 'nameList');
+    renderPesertaPickers({ prune:false });
+  }
   function scopedUsers(user=currentUser()){
+
     if(!user) return [];
     if(user.role==='ADMIN') return State.users;
     if(user.role==='TC_HEAD') return State.users.filter(u => u.role!=='ADMIN');
@@ -374,6 +498,8 @@
       progress(72, 'Menyimpan sesi login...', 'Menyiapkan hak akses sesuai role user.');
       State.session.isLoggedIn = true;
       State.session.userId = user.id;
+      State.session.loginAt = nowISO();
+      State.session.expiresAt = new Date(Date.now() + LOGIN_TTL_MS).toISOString();
       saveState();
       closeModal('loginModal');
       fillFormDefaults();
@@ -388,7 +514,7 @@
       setStatus(err.message || 'Login gagal.','no');
     }
   }
-  function logout(){ State.session = { isLoggedIn:false, userId:'', deviceId:State.session.deviceId }; saveState(); openModal('loginModal'); setStatus('Logout berhasil.','ok'); }
+  function logout(){ clearSession(true); saveState(); openModal('loginModal'); setStatus('Logout berhasil.','ok'); }
 
   function fillFormDefaults(){
     const u = currentUser() || {};
@@ -402,10 +528,15 @@
     $('#rekapMonth').value ||= todayISO().slice(0,7);
     $('#rekapEstate').value = ['ADMIN','TC_HEAD'].includes(u.role) ? ($('#rekapEstate').value || '') : (u.estate || '');
     $('#rekapMonthlyEstate').value = ['ADMIN','TC_HEAD'].includes(u.role) ? ($('#rekapMonthlyEstate').value || '') : (u.estate || '');
+    renderPesertaPickers();
   }
   function resetForm(){
     $('#editReportId').value = '';
-    ['tanggal','hariTeks','divisiCode','mandorName','hadirCount','tidakHadirCount','ketidakhadiran','materi','mentorAktif','lokasi','pesertaBaik','pesertaBina','catatanTeknis','kendala','tindakLanjut','waPreview'].forEach(id => { const el=$('#'+id); if(el) el.value=''; });
+    ['tanggal','hariTeks','divisiCode','mandorName','hadirCount','tidakHadirCount','ketidakhadiran','materi','mentorAktif','lokasi','catatanTeknis','kendala','tindakLanjut','waPreview'].forEach(id => { const el=$('#'+id); if(el) el.value=''; });
+    ReportPickerState.pesertaBaik = []; ReportPickerState.pesertaBina = [];
+    ['pesertaBaikSelected','pesertaBinaSelected','pesertaBaikList','pesertaBinaList'].forEach(id => { const el=$('#'+id); if(el) el.innerHTML=''; });
+    ['pesertaBaikSearch','pesertaBinaSearch'].forEach(id => { const el=$('#'+id); if(el) el.value=''; });
+    closeParticipantPanels();
     fillFormDefaults();
     setStatus('Form direset.');
   }
@@ -430,9 +561,9 @@
       ketidakhadiran: ($('#ketidakhadiran').value || '').trim(),
       materi: ($('#materi').value || '').trim(),
       mentorAktif: Number($('#mentorAktif').value || 0),
-      lokasi: ($('#lokasi').value || '').trim(),
-      pesertaBaik: ($('#pesertaBaik').value || '').trim(),
-      pesertaBina: ($('#pesertaBina').value || '').trim(),
+      lokasi: normalizeLocationList($('#lokasi').value || ''),
+      pesertaBaik: getReportParticipantValues('pesertaBaik').join(', '),
+      pesertaBina: getReportParticipantValues('pesertaBina').join(', '),
       catatanTeknis: ($('#catatanTeknis').value || '').trim(),
       kendala: ($('#kendala').value || '').trim(),
       tindakLanjut: ($('#tindakLanjut').value || '').trim(),
@@ -450,21 +581,42 @@
     if(!r.mandorName) return 'Nama mandor wajib diisi.';
     return '';
   }
-  function saveReport(){
+  async function saveAndAutoSync(saveFn, options={}){
+    const ok = await saveFn();
+    if(!ok) return false;
+    try {
+      const keys = Array.isArray(options.keys) && options.keys.length ? options.keys : ['reports'];
+      const label = options.label || 'Data';
+      await runBusy((progress)=> syncOnlyKeys(keys, progress), {
+        title: `${label} disimpan & sinkron`,
+        sub: 'Data disimpan lokal lalu langsung dikirim ke database online.',
+        step: 'Menyiapkan sinkron otomatis...',
+        doneStep: 'Simpan & sinkron selesai'
+      });
+      setStatus(`${label} berhasil disimpan dan disinkronkan.`, 'ok');
+      return true;
+    } catch(err){
+      setStatus(`${options.label || 'Data'} tersimpan lokal, tetapi sync otomatis gagal: ${err.message}`, 'info');
+      return true;
+    }
+  }
+  async function saveReport(){
     const report = buildReportFromForm();
     const err = validateReport(report);
-    if(err) return setStatus(err,'no');
+    if(err){ setStatus(err,'no'); return false; }
     const idx = State.reports.findIndex(r => r.id===report.id);
     if(idx >= 0) State.reports[idx] = report; else State.reports.push(report);
     saveState();
     $('#waPreview').value = buildMandorWA(report);
-    setStatus(idx >= 0 ? 'Laporan berhasil diperbarui.' : 'Laporan berhasil disimpan.','ok');
+    return true;
   }
   function editReport(id){
     const r = State.reports.find(x => x.id===id);
     if(!r || !canSeeReport(r)) return;
     $('#editReportId').value = r.id;
-    ['tanggal','hariTeks','divisiCode','mandorName','hadirCount','tidakHadirCount','ketidakhadiran','materi','mentorAktif','lokasi','pesertaBaik','pesertaBina','catatanTeknis','kendala','tindakLanjut'].forEach(id => { if($('#'+id)) $('#'+id).value = r[id] ?? ''; });
+    ['tanggal','hariTeks','divisiCode','mandorName','hadirCount','tidakHadirCount','ketidakhadiran','materi','mentorAktif','catatanTeknis','kendala','tindakLanjut'].forEach(id => { if($('#'+id)) $('#'+id).value = r[id] ?? ''; });
+    if($('#lokasi')) $('#lokasi').value = normalizeLocationList(r.lokasi || '');
+    setReportParticipantValues(splitVals(r.pesertaBaik, 'nameList'), splitVals(r.pesertaBina, 'nameList'));
     $('#waPreview').value = buildMandorWA(r);
     activateTab('laporan');
     setStatus('Mode edit aktif.','ok');
@@ -479,10 +631,10 @@
     catch { setStatus('Laporan dihapus lokal. Sinkronkan lagi bila perlu.'); }
   }
 
-  function saveUser(){
-    if(!isAdmin()) return setStatus('Hanya ADMIN yang dapat mengubah user.','no');
+  async function saveUser(){
+    if(!isAdmin()){ setStatus('Hanya ADMIN yang dapat mengubah user.','no'); return false; }
     const nip = normalizeCode($('#userNip').value); const name = ($('#userName').value||'').trim(); const role = $('#userRole').value;
-    if(!nip || !name) return setStatus('NIP dan Nama user wajib diisi.','no');
+    if(!nip || !name){ setStatus('NIP dan Nama user wajib diisi.','no'); return false; }
     const id = State.users.find(u => normalizeCode(u.nip)===nip)?.id || uid('USR');
     const user = {
       ...(State.users.find(u=>u.id===id)||{}), id, nip, name: name.toUpperCase(), role,
@@ -491,34 +643,34 @@
     };
     if(nip==='TC001'){ user.role='ADMIN'; user.estate=''; user.divisi=''; }
     const idx = State.users.findIndex(u => u.id===id); if(idx>=0) State.users[idx]=user; else State.users.push(user);
-    saveState(); setStatus('User disimpan.','ok');
+    saveState(); return true;
   }
-  function saveEstate(){
-    if(!isAdmin()) return setStatus('Hanya ADMIN yang dapat mengubah estate/divisi.','no');
+  async function saveEstate(){
+    if(!isAdmin()){ setStatus('Hanya ADMIN yang dapat mengubah estate/divisi.','no'); return false; }
     const code = normalizeCode($('#estateCode').value); const divisi = String($('#estateDivisi').value||'').trim();
-    if(!code || !divisi) return setStatus('Kode estate dan divisi wajib diisi.','no');
+    if(!code || !divisi){ setStatus('Kode estate dan divisi wajib diisi.','no'); return false; }
     const divisiCode = `${code}${divisi}`; const id = State.estates.find(e => e.divisiCode===divisiCode)?.id || uid('EST');
     const item = { ...(State.estates.find(e=>e.id===id)||{}), id, code, estate: code, name: ($('#estateName').value||'').trim(), divisi, divisiCode, manager: ($('#estateManager').value||'').trim(), active:true, createdAt: State.estates.find(e=>e.id===id)?.createdAt||nowISO(), updatedAt:nowISO(), synced:false };
     const idx = State.estates.findIndex(e => e.id===id); if(idx>=0) State.estates[idx]=item; else State.estates.push(item);
-    saveState(); setStatus('Estate/divisi disimpan.','ok');
+    saveState(); return true;
   }
-  function savePeserta(){
-    if(!isAdmin()) return setStatus('Hanya ADMIN yang dapat mengubah master peserta.','no');
+  async function savePeserta(){
+    if(!isAdmin()){ setStatus('Hanya ADMIN yang dapat mengubah master peserta.','no'); return false; }
     const nip=normalizeCode($('#pesertaNip').value), name=($('#pesertaName').value||'').trim(); const divisiCode=normalizeCode($('#pesertaDivisiCode').value); const parsed=parseDivisiCode(divisiCode);
-    if(!nip || !name || !divisiCode) return setStatus('NIP, nama, dan divisi peserta wajib diisi.','no');
+    if(!nip || !name || !divisiCode){ setStatus('NIP, nama, dan divisi peserta wajib diisi.','no'); return false; }
     const id = State.peserta.find(x=>normalizeCode(x.nip)===nip)?.id || uid('PST');
     const item = { ...(State.peserta.find(x=>x.id===id)||{}), id, nip, name: name.toUpperCase(), gender: $('#pesertaGender').value, divisiCode, estate: parsed.estate, divisi: parsed.divisi, mentorNip: normalizeCode($('#pesertaMentorNip').value), active:true, createdAt: State.peserta.find(x=>x.id===id)?.createdAt||nowISO(), updatedAt:nowISO(), synced:false };
     const idx=State.peserta.findIndex(x=>x.id===id); if(idx>=0) State.peserta[idx]=item; else State.peserta.push(item);
-    saveState(); setStatus('Peserta disimpan.','ok');
+    saveState(); return true;
   }
-  function saveMentor(){
-    if(!isAdmin()) return setStatus('Hanya ADMIN yang dapat mengubah master mentor.','no');
+  async function saveMentor(){
+    if(!isAdmin()){ setStatus('Hanya ADMIN yang dapat mengubah master mentor.','no'); return false; }
     const nip=normalizeCode($('#mentorNip').value), name=($('#mentorName').value||'').trim(); const divisiCode=normalizeCode($('#mentorDivisiCode').value); const parsed=parseDivisiCode(divisiCode);
-    if(!nip || !name || !divisiCode) return setStatus('NIP, nama, dan divisi mentor wajib diisi.','no');
+    if(!nip || !name || !divisiCode){ setStatus('NIP, nama, dan divisi mentor wajib diisi.','no'); return false; }
     const id=State.mentors.find(x=>normalizeCode(x.nip)===nip)?.id || uid('MTR');
     const item = { ...(State.mentors.find(x=>x.id===id)||{}), id, nip, name: name.toUpperCase(), divisiCode, estate: parsed.estate, divisi: parsed.divisi, active: $('#mentorActive').value==='TRUE', createdAt: State.mentors.find(x=>x.id===id)?.createdAt||nowISO(), updatedAt:nowISO(), synced:false };
     const idx=State.mentors.findIndex(x=>x.id===id); if(idx>=0) State.mentors[idx]=item; else State.mentors.push(item);
-    saveState(); setStatus('Mentor disimpan.','ok');
+    saveState(); return true;
   }
   function resetUserForm(){ ['userNip','userName','userEstate','userDivisi','userPin'].forEach(id=>$('#'+id).value=''); $('#userRole').value='MANDOR'; }
   function resetEstateForm(){ ['estateCode','estateName','estateDivisi','estateManager'].forEach(id=>$('#'+id).value=''); }
@@ -558,7 +710,7 @@
     if(!confirm(msg)) return;
     await clearLocalAppData();
     State = normalizeState(clone(DEFAULT_STATE));
-    State.session.deviceId = getOrCreateDeviceId();
+    clearSession(true);
     dbReady = true;
     saveState(true);
     resetForm();
@@ -575,8 +727,8 @@
       `Mandor: ${r.mandorName}`,'',
       '*Kehadiran:*', `Peserta hadir: ${r.hadirCount} orang`, `Peserta tidak hadir: ${r.tidakHadirCount} orang`, `Keterangan ketidakhadiran: ${r.ketidakhadiran || '-'}`,'',
       '*Kegiatan Hari Ini*:', `Materi: ${r.materi || '-'}`, `Mentor aktif: ${r.mentorAktif || 0} orang`, `Lokasi : ${r.lokasi || '-'}`,'',
-      '*Hasil Pemantauan:*', `Peserta yang menunjukkan perkembangan baik: ${r.pesertaBaik || '-'}`, `Peserta yang masih perlu pembinaan: ${r.pesertaBina || '-'}`, `Catatan teknis di lapangan: ${r.catatanTeknis || '-'}`,'',
-      '*Kendala Hari Ini:*', r.kendala || '-','', 'Rencana Tindak Lanjut Besok:', r.tindakLanjut || '-', '', 'Demikian dan terima kasih.'
+      '*Hasil Pemantauan:*', `Peserta yang menunjukkan perkembangan baik: ${r.pesertaBaik || '-'}`, `Peserta yang masih perlu pembinaan: ${r.pesertaBina || '-'}`, `*Catatan teknis di lapangan:* ${r.catatanTeknis || '-'}`,'',
+      '*Kendala Hari Ini:*', r.kendala || '-','', '*Rencana Tindak Lanjut Besok:*', r.tindakLanjut || '-', '', 'Demikian dan terima kasih.'
     ].join('\n');
   }
   function buildAggregate(date, role, estateFilter){
@@ -782,6 +934,27 @@
     catch(err){ $('#settingsResult').textContent = err.message; setStatus(err.message,'no'); }
     renderAll();
   }
+  async function syncOnlyKeys(keys, progressCb){
+    if(!isLoggedIn()) throw new Error('Login dahulu.');
+    const datasets = (Array.isArray(keys) ? keys : []).filter(Boolean);
+    if(!datasets.length) return { success:true, totalSuccess:0, totalFailed:0, message:'Tidak ada dataset untuk sinkronisasi.' };
+    let totalSuccess = 0;
+    let totalFailed = 0;
+    const unique = Array.from(new Set(datasets));
+    for(let i=0;i<unique.length;i++){
+      const key = unique[i];
+      const rows = collectPendingByKey(key, false);
+      const start = 18 + (i * Math.max(12, Math.floor(66 / Math.max(1, unique.length))));
+      const end = Math.min(92, start + Math.max(8, Math.floor(58 / Math.max(1, unique.length))));
+      const result = await syncDatasetBatches(key, rows, progressCb || (()=>{}), start, end);
+      totalSuccess += result.success;
+      totalFailed += result.failed;
+    }
+    saveState(true);
+    renderFailedSync();
+    return { success:true, totalSuccess, totalFailed, message: totalFailed ? `Sebagian data gagal sync (${totalFailed}).` : 'Data berhasil di-sync.' };
+  }
+
   async function syncAll(silent=false, progressCb){
     if(!isLoggedIn()) return setStatus('Login dahulu.','no');
     const job = async (progress)=>{
@@ -1162,22 +1335,29 @@ Lokasi: ${esc(r.lokasi)}</div>
     $$('[data-del-report]').forEach(btn => btn.addEventListener('click', ()=> deleteReport(btn.dataset.delReport)));
   }
   function fillSettings(){ $('#gasUrl').value = State.settings.gasUrl || DEFAULT_REMOTE.gasUrl; $('#sheetId').value = State.settings.sheetId || DEFAULT_REMOTE.sheetId; $('#defaultTheme').value = State.settings.defaultTheme || 'light'; }
-  function renderAll(){ renderAuth(); renderPermissions(); renderDashboard(); renderLists(); renderDb(); renderMonthlyRecap(); fillSettings(); renderFailedSync(); }
+  function renderAll(){ renderAuth(); renderPermissions(); renderDashboard(); renderLists(); renderDb(); renderMonthlyRecap(); fillSettings(); renderFailedSync(); renderPesertaPickers(); }
   function activateTab(tabId){ $$('.tab').forEach(x=>x.classList.toggle('active', x.dataset.tab===tabId)); $$('.tab-panel').forEach(x=>x.classList.toggle('active', x.id===tabId)); }
 
   function initEvents(){
     $$('.tab').forEach(btn => btn.addEventListener('click', ()=> activateTab(btn.dataset.tab)));
     $('#tanggal').addEventListener('change', ()=> $('#hariTeks').value = formatLongDate($('#tanggal').value));
+    $('#divisiCode').addEventListener('input', ()=> renderPesertaPickers({ prune:true }));
+    $('#divisiCode').addEventListener('change', ()=> renderPesertaPickers({ prune:true }));
+    $('#btnTogglePesertaBaik').addEventListener('click', ()=> { const p=$('#pesertaBaikPanel'); const open=p.classList.contains('hidden'); closeParticipantPanels(open ? 'pesertaBaik' : ''); p.classList.toggle('hidden', !open); if(open) { $('#pesertaBaikSearch').focus(); renderParticipantPicker('pesertaBaik'); } });
+    $('#btnTogglePesertaBina').addEventListener('click', ()=> { const p=$('#pesertaBinaPanel'); const open=p.classList.contains('hidden'); closeParticipantPanels(open ? 'pesertaBina' : ''); p.classList.toggle('hidden', !open); if(open) { $('#pesertaBinaSearch').focus(); renderParticipantPicker('pesertaBina'); } });
+    $('#pesertaBaikSearch').addEventListener('input', ()=> renderParticipantPicker('pesertaBaik'));
+    $('#pesertaBinaSearch').addEventListener('input', ()=> renderParticipantPicker('pesertaBina'));
+    document.addEventListener('click', (e)=> { const addBtn = e.target.closest('[data-add-field]'); const removeBtn = e.target.closest('[data-remove-field]'); if(addBtn){ addParticipantToField(addBtn.dataset.addField, addBtn.dataset.name || ''); return; } if(removeBtn){ removeParticipantFromField(removeBtn.dataset.removeField, removeBtn.dataset.name || ''); return; } if(!e.target.closest('#pickerPesertaBaikBox') && !e.target.closest('#pickerPesertaBinaBox')) closeParticipantPanels(); });
     $('#btnTheme').addEventListener('click', ()=> applyTheme(document.body.classList.contains('dark') ? 'light' : 'dark'));
     $('#btnOpenLogin').addEventListener('click', ()=> openModal('loginModal'));
     $('#btnLogout').addEventListener('click', logout);
     $('#btnDoLogin').addEventListener('click', login);
     $$('.close-btn,[data-close]').forEach(btn => btn.addEventListener('click', ()=> closeModal(btn.dataset.close || 'loginModal')));
-    $('#btnSaveUser').addEventListener('click', saveUser); $('#btnResetUser').addEventListener('click', resetUserForm);
-    $('#btnSaveEstate').addEventListener('click', saveEstate); $('#btnResetEstate').addEventListener('click', resetEstateForm);
-    $('#btnSavePeserta').addEventListener('click', savePeserta); $('#btnResetPeserta').addEventListener('click', resetPesertaForm);
-    $('#btnSaveMentor').addEventListener('click', saveMentor); $('#btnResetMentor').addEventListener('click', resetMentorForm);
-    $('#btnResetForm').addEventListener('click', resetForm); $('#btnSave').addEventListener('click', saveReport);
+    $('#btnSaveUser').addEventListener('click', ()=> saveAndAutoSync(saveUser, { keys:['users'], label:'User' })); $('#btnResetUser').addEventListener('click', resetUserForm);
+    $('#btnSaveEstate').addEventListener('click', ()=> saveAndAutoSync(saveEstate, { keys:['estates'], label:'Estate/divisi' })); $('#btnResetEstate').addEventListener('click', resetEstateForm);
+    $('#btnSavePeserta').addEventListener('click', ()=> saveAndAutoSync(savePeserta, { keys:['peserta'], label:'Peserta' })); $('#btnResetPeserta').addEventListener('click', resetPesertaForm);
+    $('#btnSaveMentor').addEventListener('click', ()=> saveAndAutoSync(saveMentor, { keys:['mentors'], label:'Mentor' })); $('#btnResetMentor').addEventListener('click', resetMentorForm);
+    $('#btnResetForm').addEventListener('click', resetForm); $('#btnSave').addEventListener('click', ()=> saveAndAutoSync(saveReport, { keys:['reports'], label:'Laporan' }));
     $('#btnGenerateMandor').addEventListener('click', generateMandorWAByDate);
     $('#btnCopyWA').addEventListener('click', ()=> copyText($('#waPreview').value));
     $('#btnOpenWA').addEventListener('click', ()=>{ const text=$('#waPreview').value; if(!text) return setStatus('Preview WA kosong.','no'); window.open(`https://wa.me/?text=${encodeURIComponent(text)}`,'_blank'); });
@@ -1188,7 +1368,7 @@ Lokasi: ${esc(r.lokasi)}</div>
     $('#btnExportMonthlyExcel').addEventListener('click', exportMonthlyExcel);
     $('#btnExportMonthlyPdf').addEventListener('click', exportMonthlyPdf);
     $('#btnSaveSettings').addEventListener('click', ()=> runBusy(()=>saveSettingsRemote(), { title:'Menyimpan pengaturan', sub:'Pengaturan koneksi sedang disimpan ke database online.', step:'Menyimpan pengaturan...', doneStep:'Pengaturan tersimpan' }).catch(err => { $('#settingsResult').textContent = err.message; setStatus(err.message,'no'); })); $('#btnSetupSheets').addEventListener('click', ()=> runBusy(()=>setupSheets(), { title:'Menyiapkan sheet online', sub:'Sheet dan header sedang dicek pada spreadsheet tujuan.', step:'Mengecek workbook...', doneStep:'Sheet siap' }).catch(err => { $('#settingsResult').textContent = err.message; setStatus(err.message,'no'); })); $('#btnTestConnection').addEventListener('click', ()=> runBusy(()=>testConnection(), { title:'Menguji koneksi', sub:'Sedang mencoba koneksi ke Apps Script.', step:'Menghubungi server...', doneStep:'Koneksi berhasil' }).catch(err => { $('#settingsResult').textContent = err.message; setStatus(err.message,'no'); }));
-    $('#btnSync').addEventListener('click', ()=> syncAll().catch(err => setStatus(err.message,'no'))); $('#btnPull').addEventListener('click', ()=> pullAll().catch(err => setStatus(err.message,'no')));
+    $('#btnPull').addEventListener('click', ()=> pullAll().catch(err => setStatus(err.message,'no')));
     $('#btnRetryAllFailed')?.addEventListener('click', ()=> retryFailedSyncAll().catch(err => setStatus(err.message,'no')));
     $('#btnRefreshFailed')?.addEventListener('click', ()=> { renderFailedSync(); setStatus('Daftar gagal diperbarui.','ok'); });
     $('#btnClearFailedLog')?.addEventListener('click', ()=> { if(!failedQueue().length) return setStatus('Daftar gagal sudah kosong.','ok'); if(!confirm('Hapus semua log gagal sync?')) return; State.meta.failedSyncQueue = []; saveState(); renderFailedSync(); setStatus('Log gagal dibersihkan.','ok'); });
@@ -1202,6 +1382,7 @@ Lokasi: ${esc(r.lokasi)}</div>
     fillFormDefaults();
     initEvents();
     await bootstrapOnline();
+    ensureSessionValid(true);
     renderAll();
     if(!isLoggedIn()) openModal('loginModal');
   }

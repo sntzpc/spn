@@ -38,8 +38,7 @@
       <div class="hero-actions">
         <button class="btn secondary" id="btnOpenLogin" type="button">Login</button>
         <button class="btn secondary auth-only" id="btnLogout" type="button">Logout</button>
-        <button class="btn secondary auth-only" id="btnSync" type="button">Sync</button>
-        <button class="btn secondary auth-only" id="btnPull" type="button">Pull</button>
+                <button class="btn secondary auth-only" id="btnPull" type="button">Pull</button>
       </div>
     </section>
 
@@ -230,8 +229,32 @@
             <div class="field"><label for="materi">Materi</label><textarea id="materi" rows="2"></textarea></div>
             <div class="field"><label for="mentorAktif">Mentor aktif</label><input id="mentorAktif" type="number" min="0" /></div>
             <div class="field full"><label for="lokasi">Lokasi</label><textarea id="lokasi" rows="2"></textarea></div>
-            <div class="field"><label for="pesertaBaik">Peserta berkembang baik</label><textarea id="pesertaBaik" rows="3"></textarea></div>
-            <div class="field"><label for="pesertaBina">Peserta perlu pembinaan</label><textarea id="pesertaBina" rows="3"></textarea></div>
+            <div class="field">
+              <label for="pesertaBaik">Peserta berkembang baik</label>
+              <div class="picker-box" id="pickerPesertaBaikBox">
+                <div class="picker-selected" id="pesertaBaikSelected"></div>
+                <div class="picker-actions-row">
+                  <button class="btn secondary btn-sm" id="btnTogglePesertaBaik" type="button">Pilih Peserta</button>
+                </div>
+                <div class="picker-panel hidden" id="pesertaBaikPanel">
+                  <input id="pesertaBaikSearch" class="picker-search" type="text" placeholder="Cari nama peserta..." />
+                  <div class="picker-list" id="pesertaBaikList"></div>
+                </div>
+              </div>
+            </div>
+            <div class="field">
+              <label for="pesertaBina">Peserta perlu pembinaan</label>
+              <div class="picker-box" id="pickerPesertaBinaBox">
+                <div class="picker-selected" id="pesertaBinaSelected"></div>
+                <div class="picker-actions-row">
+                  <button class="btn secondary btn-sm" id="btnTogglePesertaBina" type="button">Pilih Peserta</button>
+                </div>
+                <div class="picker-panel hidden" id="pesertaBinaPanel">
+                  <input id="pesertaBinaSearch" class="picker-search" type="text" placeholder="Cari nama peserta..." />
+                  <div class="picker-list" id="pesertaBinaList"></div>
+                </div>
+              </div>
+            </div>
             <div class="field full"><label for="catatanTeknis">Catatan teknis di lapangan</label><textarea id="catatanTeknis" rows="3"></textarea></div>
             <div class="field full"><label for="kendala">Kendala hari ini</label><textarea id="kendala" rows="3"></textarea></div>
             <div class="field full"><label for="tindakLanjut">Rencana tindak lanjut besok</label><textarea id="tindakLanjut" rows="3"></textarea></div>

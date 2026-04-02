@@ -256,7 +256,23 @@ function userToRow_(i){ return [i.id||'', i.nip||'', i.name||'', i.role||'', i.e
 function estateToRow_(i){ return [i.id||'', i.code||'', i.name||'', i.divisi||'', i.divisiCode||'', i.manager||'', boolToText_(i.active !== false), i.createdAt||new Date().toISOString(), i.updatedAt||new Date().toISOString()]; }
 function pesertaToRow_(i){ return [i.id||'', i.nip||'', i.name||'', i.gender||'', i.divisiCode||'', i.estate||'', i.divisi||'', i.mentorNip||'', boolToText_(i.active !== false), i.createdAt||new Date().toISOString(), i.updatedAt||new Date().toISOString()]; }
 function mentorToRow_(i){ return [i.id||'', i.nip||'', i.name||'', i.divisiCode||'', i.estate||'', i.divisi||'', boolToText_(i.active !== false), i.createdAt||new Date().toISOString(), i.updatedAt||new Date().toISOString()]; }
-function reportToRow_(i){ return [i.id||'', i.createdAt||'', i.updatedAt||'', i.tanggal||'', i.hariTeks||'', i.divisiCode||'', i.estate||'', i.divisi||'', i.mandorName||'', Number(i.hadirCount||0), Number(i.tidakHadirCount||0), i.ketidakhadiran||'', i.materi||'', Number(i.mentorAktif||0), i.lokasi||'', i.pesertaBaik||'', i.pesertaBina||'', i.catatanTeknis||'', i.kendala||'', i.tindakLanjut||'', i.syncedAt||new Date().toISOString(), i.createdBy && i.createdBy.userId || '', i.createdBy && i.createdBy.name || '', i.createdBy && i.createdBy.role || '', i.createdBy && i.createdBy.estate || '', i.createdBy && i.createdBy.divisi || '', i.createdBy && i.createdBy.nip || '', i.createdBy && i.createdBy.deviceId || '']; }
+function normalizeLocationToken_(v){
+  var raw = String(v || '').trim();
+  if (!raw) return '';
+  var compact = raw.toUpperCase().replace(/\s+/g, '');
+  var m = compact.match(/^([A-Z]+)-?(\d+[A-Z]?)$/);
+  if (m) return m[1] + '-' + m[2];
+  return raw.toUpperCase().replace(/\s+/g, ' ');
+}
+function normalizeLocationList_(v){
+  var seen = {};
+  return String(v || '')
+    .split(/[;,\n]+/)
+    .map(function(x){ return normalizeLocationToken_(x); })
+    .filter(function(x){ if (!x) return false; var k=x.toUpperCase(); if (seen[k]) return false; seen[k]=true; return true; })
+    .join(', ');
+}
+function reportToRow_(i){ return [i.id||'', i.createdAt||'', i.updatedAt||'', i.tanggal||'', i.hariTeks||'', i.divisiCode||'', i.estate||'', i.divisi||'', i.mandorName||'', Number(i.hadirCount||0), Number(i.tidakHadirCount||0), i.ketidakhadiran||'', i.materi||'', Number(i.mentorAktif||0), normalizeLocationList_(i.lokasi||''), i.pesertaBaik||'', i.pesertaBina||'', i.catatanTeknis||'', i.kendala||'', i.tindakLanjut||'', i.syncedAt||new Date().toISOString(), i.createdBy && i.createdBy.userId || '', i.createdBy && i.createdBy.name || '', i.createdBy && i.createdBy.role || '', i.createdBy && i.createdBy.estate || '', i.createdBy && i.createdBy.divisi || '', i.createdBy && i.createdBy.nip || '', i.createdBy && i.createdBy.deviceId || '']; }
 
 function recalcRecaps_(ss){
   var reports = readReports_(ss.getSheetByName('LaporanHarian'));
@@ -286,8 +302,9 @@ function writeRekapTcHead_(sh, reports){
   if(rows.length) sh.getRange(2,1,rows.length,rows[0].length).setValues(rows);
 }
 function initAgg_(tanggal, estate, divisi){ return { tanggal:tanggal, estate:estate, divisi:divisi, jumlahLaporan:0, hadir:0, tidakHadir:0, mentorAktif:0, materi:[], lokasi:[], kendala:[], tindakLanjut:[], estateList:[], divisiList:[] }; }
-function addAgg_(a, r){ a.jumlahLaporan++; a.hadir += Number(r.hadirCount||0); a.tidakHadir += Number(r.tidakHadirCount||0); a.mentorAktif += Number(r.mentorAktif||0); pushUniq_(a.materi, splitList_(r.materi)); pushUniq_(a.lokasi, splitList_(r.lokasi)); pushUniq_(a.kendala, splitList_(r.kendala)); pushUniq_(a.tindakLanjut, splitList_(r.tindakLanjut)); pushUniq_(a.estateList, [r.estate]); pushUniq_(a.divisiList, [r.divisiCode]); }
+function addAgg_(a, r){ a.jumlahLaporan++; a.hadir += Number(r.hadirCount||0); a.tidakHadir += Number(r.tidakHadirCount||0); a.mentorAktif += Number(r.mentorAktif||0); pushUniq_(a.materi, splitList_(r.materi)); pushUniq_(a.lokasi, splitLocationList_(r.lokasi)); pushUniq_(a.kendala, splitList_(r.kendala)); pushUniq_(a.tindakLanjut, splitList_(r.tindakLanjut)); pushUniq_(a.estateList, [r.estate]); pushUniq_(a.divisiList, [r.divisiCode]); }
 function splitList_(s){ return String(s||'').split(/[;,\n]+/).map(function(x){ return x.trim(); }).filter(Boolean); }
+function splitLocationList_(s){ return String(s||'').split(/[;,\n]+/).map(function(x){ return normalizeLocationToken_(x.trim()); }).filter(Boolean); }
 function pushUniq_(arr, vals){ vals.forEach(function(v){ if (arr.indexOf(v) === -1) arr.push(v); }); }
 function clearData_(sh){ if (sh.getLastRow() > 1) sh.getRange(2,1,sh.getLastRow()-1,sh.getLastColumn()).clearContent(); }
 function appendAudit_(sh, action, message, ts){

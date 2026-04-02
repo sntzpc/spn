@@ -123,3 +123,24 @@ textarea{resize:vertical}
 .loading-meta{display:flex;justify-content:space-between;gap:12px;margin-top:10px;font-size:13px;font-weight:700;color:var(--muted);}
 body.is-busy .btn, body.is-busy .icon-btn, body.is-busy .tab{pointer-events:none;opacity:.75;}
 body.is-busy input, body.is-busy textarea, body.is-busy select{pointer-events:none;}
+
+select[multiple]{min-height:170px;padding:10px 12px;}
+select[multiple] option{padding:8px 10px;border-radius:10px;}
+
+
+/* Participant picker */
+.picker-box{border:1px solid var(--line);border-radius:14px;padding:10px;background:var(--panel);}
+.picker-selected{display:flex;flex-wrap:wrap;gap:8px;min-height:44px;align-items:flex-start}
+.picker-empty{color:var(--muted);font-size:12px;padding:6px 2px}
+.picker-chip{display:inline-flex;align-items:center;gap:6px;padding:6px 10px;border-radius:999px;background:rgba(249,115,22,.12);border:1px solid rgba(249,115,22,.28);font-size:12px;font-weight:600}
+.picker-chip button{border:none;background:transparent;cursor:pointer;font-size:15px;line-height:1;padding:0 0 1px 0;color:inherit}
+.picker-actions-row{margin-top:8px}
+.btn-sm{padding:8px 12px;font-size:12px;border-radius:10px}
+.picker-panel{margin-top:10px;border-top:1px dashed var(--line);padding-top:10px}
+.picker-search{width:100%;padding:10px 12px;border:1px solid var(--line);border-radius:10px;background:var(--panel-2);color:var(--text)}
+.picker-list{max-height:220px;overflow:auto;display:flex;flex-direction:column;gap:8px;margin-top:10px}
+.picker-option{display:flex;justify-content:space-between;align-items:center;padding:10px 12px;border:1px solid var(--line);border-radius:12px;background:var(--panel-2);cursor:pointer}
+.picker-option:hover{transform:translateY(-1px)}
+.picker-option .meta{font-size:11px;color:var(--muted)}
+.picker-muted{font-size:12px;color:var(--muted);padding:6px 2px}
+.hidden{display:none !important}
