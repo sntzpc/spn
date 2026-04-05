@@ -1043,7 +1043,8 @@
         map.set(key, {
           month, estate:r.estate, divisi:r.divisi, divisiCode:r.divisiCode, jumlahLaporan:0,
           hadirTotal:0, tidakHadirTotal:0, mentorAktifTotal:0,
-          materi:[], lokasi:[], mandor:[], kendala:[], tindakLanjut:[], pesertaBaik:[], pesertaBina:[], tanggal:[]
+          materi:[], lokasi:[], mandor:[], kendala:[], tindakLanjut:[], pesertaBaik:[], pesertaBina:[], tanggal:[],
+          daily: new Map()
         });
       }
       const a = map.get(key);
@@ -1058,26 +1059,42 @@
       a.pesertaBaik.push(...splitVals(r.pesertaBaik, 'nameList'));
       a.pesertaBina.push(...splitVals(r.pesertaBina, 'nameList'));
       if (r.mandorName) a.mandor.push(cleanupPhrase(r.mandorName, 'nameList'));
-      if (r.tanggal) a.tanggal.push(r.tanggal);
+      if (r.tanggal) {
+        a.tanggal.push(r.tanggal);
+        const dayKey = String(r.tanggal).slice(0,10);
+        if (!a.daily.has(dayKey)) a.daily.set(dayKey, { hadir:0, tidakHadir:0, mentorAktif:0 });
+        const d = a.daily.get(dayKey);
+        d.hadir += Number(r.hadirCount || 0);
+        d.tidakHadir += Number(r.tidakHadirCount || 0);
+        d.mentorAktif += Number(r.mentorAktif || 0);
+      }
     });
-    return Array.from(map.values()).map(a => ({
-      month: a.month,
-      estate: a.estate,
-      divisi: a.divisi,
-      divisiCode: a.divisiCode,
-      jumlahLaporan: a.jumlahLaporan,
-      hadir: averageRounded(a.hadirTotal, a.jumlahLaporan),
-      tidakHadir: averageRounded(a.tidakHadirTotal, a.jumlahLaporan),
-      mentorAktif: averageRounded(a.mentorAktifTotal, a.jumlahLaporan),
-      materi: topCountedLabels(a.materi, 'topic', 5),
-      lokasi: uniqueNormalized(a.lokasi, 'location'),
-      mandor: uniqueNormalized(a.mandor, 'nameList'),
-      kendala: topCountedLabels(a.kendala, 'text', 5),
-      tindakLanjut: topCountedLabels(a.tindakLanjut, 'text', 5),
-      pesertaBaik: countedNamesAlpha(a.pesertaBaik),
-      pesertaBina: countedNamesAlpha(a.pesertaBina),
-      hariLapor: uniqueNormalized(a.tanggal).sort()
-    })).sort((x,y)=> normalizeCode(x.estate).localeCompare(normalizeCode(y.estate)) || Number(x.divisi||0)-Number(y.divisi||0));
+    return Array.from(map.values()).map(a => {
+      const dailyRows = Array.from(a.daily.values());
+      const hariAktif = dailyRows.length || 0;
+      const hadirHarianTotal = dailyRows.reduce((n, d) => n + Number(d.hadir || 0), 0);
+      const tidakHadirHarianTotal = dailyRows.reduce((n, d) => n + Number(d.tidakHadir || 0), 0);
+      const mentorAktifHarianTotal = dailyRows.reduce((n, d) => n + Number(d.mentorAktif || 0), 0);
+      return ({
+        month: a.month,
+        estate: a.estate,
+        divisi: a.divisi,
+        divisiCode: a.divisiCode,
+        jumlahLaporan: a.jumlahLaporan,
+        hariAktif,
+        hadir: averageRounded(hadirHarianTotal, hariAktif),
+        tidakHadir: averageRounded(tidakHadirHarianTotal, hariAktif),
+        mentorAktif: averageRounded(mentorAktifHarianTotal, hariAktif),
+        materi: topCountedLabels(a.materi, 'topic', 5),
+        lokasi: uniqueNormalized(a.lokasi, 'location'),
+        mandor: uniqueNormalized(a.mandor, 'nameList'),
+        kendala: topCountedLabels(a.kendala, 'text', 5),
+        tindakLanjut: topCountedLabels(a.tindakLanjut, 'text', 5),
+        pesertaBaik: countedNamesAlpha(a.pesertaBaik),
+        pesertaBina: countedNamesAlpha(a.pesertaBina),
+        hariLapor: uniqueNormalized(a.tanggal).sort()
+      });
+    }).sort((x,y)=> normalizeCode(x.estate).localeCompare(normalizeCode(y.estate)) || Number(x.divisi||0)-Number(y.divisi||0));
   }
   function renderMonthlyRecap(){
     const wrap = $('#monthlyRecapCards');
@@ -1090,7 +1107,7 @@
           <div class="report-title">${esc(monthLabel(month))} • ${esc(r.divisiCode)} • ${esc(r.estate)}</div>
           <div class="chip ok">${esc(String(r.jumlahLaporan))} laporan</div>
         </div>
-        <div class="report-meta">Hadir rata-rata ${fmtAvg(r.hadir)} | Tidak hadir rata-rata ${fmtAvg(r.tidakHadir)} | Mentor aktif rata-rata ${fmtAvg(r.mentorAktif)}</div>
+        <div class="report-meta">Hadir rata-rata harian total ${fmtAvg(r.hadir)} | Tidak hadir rata-rata harian total ${fmtAvg(r.tidakHadir)} | Mentor aktif rata-rata harian total ${fmtAvg(r.mentorAktif)}</div>
         <div class="report-line"><strong>Mandor:</strong> ${esc(r.mandor.join(', ') || '-')}</div>
         <div class="report-line"><strong>Materi:</strong> ${esc(r.materi.join(', ') || '-')}</div>
         <div class="report-line"><strong>Lokasi:</strong> ${esc(r.lokasi.join(', ') || '-')}</div>
@@ -1128,7 +1145,7 @@
     doc.text(`Dicetak oleh: ${currentUser()?.name || '-'} (${currentUser()?.role || '-'})`, 14, 29);
     doc.autoTable({
       startY: 35,
-      head: [['Estate','Divisi','Jumlah Laporan','Hadir Rata-rata','Tidak Hadir Rata-rata','Mentor Aktif Rata-rata','Mandor','Materi','Kendala','Tindak Lanjut']],
+      head: [['Estate','Divisi','Jumlah Laporan','Hari Aktif','Hadir Rata-rata Harian Total','Tidak Hadir Rata-rata Harian Total','Mentor Aktif Rata-rata Harian Total','Mandor','Materi','Kendala','Tindak Lanjut']],
       body: rows.map(r => [r.estate, r.divisiCode, r.jumlahLaporan, fmtAvg(r.hadir), fmtAvg(r.tidakHadir), fmtAvg(r.mentorAktif), r.mandor.join(', ') || '-', r.materi.join(', ') || '-', r.kendala.join('; ') || '-', r.tindakLanjut.join('; ') || '-']),
       styles: { fontSize: 8, cellPadding: 2, overflow:'linebreak' },
       headStyles: { fillColor: [249,115,22] },
