@@ -38,3 +38,10 @@ Aplikasi ini menggunakan CDN:
 - ExcelJS
 
 Saat pertama kali dibuka, koneksi internet dibutuhkan agar library termuat dengan baik.
+
+## Update logika rata-rata v2.1
+- Rata-rata skor produktivitas sekarang hanya memakai skor > 0 sebagai pembagi.
+- Skor produktivitas 0 dari tanggal tanpa aktivitas tidak ikut menurunkan rata-rata.
+- Rata-rata absensi tetap menghitung skor 0 sebagai tidak hadir pada hari kerja Senin-Sabtu setelah pekerja mulai memiliki data/aktivitas pertama.
+- Skor absensi 0 sebelum tanggal aktif pertama pekerja tidak ikut menjadi pembagi.
+- Tampilan matriks harian tetap menampilkan angka 0 agar tanggal tanpa aktivitas tetap terlihat, tetapi kolom Rerata memakai aturan pembagi baru di atas.

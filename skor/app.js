@@ -136,6 +136,61 @@ function avgScoreFromValues(values) {
   return values.reduce((s, v) => s + Number(v || 0), 0) / values.length;
 }
 
+function parseISODateOnly(dateISO) {
+  const m = String(dateISO || '').match(/^(\d{4})-(\d{2})-(\d{2})$/);
+  if (!m) return null;
+  const d = new Date(Number(m[1]), Number(m[2]) - 1, Number(m[3]));
+  return isNaN(d.getTime()) ? null : d;
+}
+function isWorkdayMonToSat(dateISO) {
+  const d = parseISODateOnly(dateISO);
+  if (!d) return false;
+  const day = d.getDay(); // 0=Minggu, 1=Senin, ..., 6=Sabtu
+  return day >= 1 && day <= 6;
+}
+function isProductivityCountable(row) {
+  return Number(row?.productivityScore || 0) > 0;
+}
+function isAttendanceCountable(row) {
+  if (!row) return false;
+  if (typeof row.attendanceCountable === 'boolean') return row.attendanceCountable;
+  return Number(row.attendanceScore || 0) > 0;
+}
+function avgProductivityScoreFromValues(values) {
+  const valid = (values || []).map(v => Number(v || 0)).filter(v => v > 0);
+  return valid.length ? valid.reduce((sum, v) => sum + v, 0) / valid.length : 0;
+}
+function avgAttendanceScoreFromValues(values, dateList, firstActiveDateISO) {
+  if (!values || !values.length) return 0;
+  const valid = [];
+  for (let i = 0; i < values.length; i++) {
+    const score = Number(values[i] || 0);
+    const dateISO = dateList?.[i] || '';
+    const countable = score > 0 || (firstActiveDateISO && dateISO >= firstActiveDateISO && isWorkdayMonToSat(dateISO));
+    if (countable) valid.push(score);
+  }
+  return valid.length ? valid.reduce((sum, v) => sum + v, 0) / valid.length : 0;
+}
+function normalizeDailyRowsForScoring(rows) {
+  const firstActiveByWorker = new Map();
+  for (const row of rows || []) {
+    if (Number(row.attendanceScore || 0) <= 0) continue;
+    const key = `${row.unit || ''}__${row.nip || ''}__${row.nama || ''}`;
+    const dateISO = String(row.dateISO || '');
+    if (!dateISO) continue;
+    const prev = firstActiveByWorker.get(key);
+    if (!prev || dateISO < prev) firstActiveByWorker.set(key, dateISO);
+  }
+  for (const row of rows || []) {
+    const key = `${row.unit || ''}__${row.nip || ''}__${row.nama || ''}`;
+    const firstActiveDateISO = firstActiveByWorker.get(key) || '';
+    row.productivityCountable = isProductivityCountable(row);
+    row.firstActiveDateISO = firstActiveDateISO;
+    row.attendanceCountable = Number(row.attendanceScore || 0) > 0
+      || Boolean(firstActiveDateISO && String(row.dateISO || '') >= firstActiveDateISO && isWorkdayMonToSat(row.dateISO));
+  }
+}
+
 function openDb() {
   return new Promise((resolve, reject) => {
     const req = indexedDB.open(DB_NAME, DB_VERSION);
@@ -253,6 +308,8 @@ function applyFilters() {
 }
 
 function buildRecaps() {
+  normalizeDailyRowsForScoring(state.filteredRows);
+
   const unitMap = new Map();
   const workerMap = new Map();
 
@@ -265,15 +322,21 @@ function buildRecaps() {
         workerSet: new Set(),
         prodSum: 0,
         absSum: 0,
-        prodCount: 0
+        prodCount: 0,
+        absCount: 0
       });
     }
     const u = unitMap.get(uKey);
     u.hk += 1;
     u.workerSet.add(row.nip || row.nama);
-    u.prodSum += Number(row.productivityScore || 0);
-    u.absSum += Number(row.attendanceScore || 0);
-    u.prodCount += 1;
+    if (isProductivityCountable(row)) {
+      u.prodSum += Number(row.productivityScore || 0);
+      u.prodCount += 1;
+    }
+    if (isAttendanceCountable(row)) {
+      u.absSum += Number(row.attendanceScore || 0);
+      u.absCount += 1;
+    }
 
     const wKey = `${row.unit}__${row.nip}__${row.nama}`;
     if (!workerMap.has(wKey)) {
@@ -283,13 +346,21 @@ function buildRecaps() {
         nama: row.nama,
         hk: 0,
         prodSum: 0,
-        absSum: 0
+        absSum: 0,
+        prodCount: 0,
+        absCount: 0
       });
     }
     const w = workerMap.get(wKey);
     w.hk += 1;
-    w.prodSum += Number(row.productivityScore || 0);
-    w.absSum += Number(row.attendanceScore || 0);
+    if (isProductivityCountable(row)) {
+      w.prodSum += Number(row.productivityScore || 0);
+      w.prodCount += 1;
+    }
+    if (isAttendanceCountable(row)) {
+      w.absSum += Number(row.attendanceScore || 0);
+      w.absCount += 1;
+    }
   }
 
   state.unitRecap = Array.from(unitMap.values()).map(v => ({
@@ -297,7 +368,7 @@ function buildRecaps() {
     hk: v.hk,
     workers: v.workerSet.size,
     avgProd: v.prodCount ? v.prodSum / v.prodCount : 0,
-    avgAbs: v.prodCount ? v.absSum / v.prodCount : 0
+    avgAbs: v.absCount ? v.absSum / v.absCount : 0
   })).sort((a, b) => a.unit.localeCompare(b.unit));
 
   state.workerRecap = Array.from(workerMap.values()).map(v => ({
@@ -305,8 +376,8 @@ function buildRecaps() {
     nip: v.nip,
     nama: v.nama,
     hk: v.hk,
-    avgProd: v.hk ? v.prodSum / v.hk : 0,
-    avgAbs: v.hk ? v.absSum / v.hk : 0
+    avgProd: v.prodCount ? v.prodSum / v.prodCount : 0,
+    avgAbs: v.absCount ? v.absSum / v.absCount : 0
   })).sort((a, b) => a.unit.localeCompare(b.unit) || a.nama.localeCompare(b.nama));
 
 
@@ -338,12 +409,16 @@ function buildUnitMatrices() {
           nip: row.nip || '',
           nama: row.nama || '',
           prodByDate: {},
-          absByDate: {}
+          absByDate: {},
+          firstActiveDateISO: row.firstActiveDateISO || ''
         });
       }
       const item = workerMap.get(key);
       item.prodByDate[row.dateISO] = Number(row.productivityScore || 0);
       item.absByDate[row.dateISO] = Number(row.attendanceScore || 0);
+      if (Number(row.attendanceScore || 0) > 0) {
+        item.firstActiveDateISO = !item.firstActiveDateISO || row.dateISO < item.firstActiveDateISO ? row.dateISO : item.firstActiveDateISO;
+      }
     }
 
     const workers = Array.from(workerMap.values()).map(item => {
@@ -353,8 +428,8 @@ function buildUnitMatrices() {
         ...item,
         prodValues,
         absValues,
-        avgProd: avgScoreFromValues(prodValues),
-        avgAbs: avgScoreFromValues(absValues)
+        avgProd: avgProductivityScoreFromValues(prodValues),
+        avgAbs: avgAttendanceScoreFromValues(absValues, dateList, item.firstActiveDateISO)
       };
     }).sort((a, b) =>
       String(a.divisi || '').localeCompare(String(b.divisi || ''), 'id') ||
@@ -379,7 +454,9 @@ function renderAll() {
 function renderStats() {
   const workerSet = new Set(state.filteredRows.map(r => `${r.unit}__${r.nip}__${r.nama}`));
   const fileSet = new Set(state.filteredRows.map(r => r.fileName));
-  const avgProd = state.filteredRows.length ? state.filteredRows.reduce((s, r) => s + Number(r.productivityScore || 0), 0) / state.filteredRows.length : 0;
+  normalizeDailyRowsForScoring(state.filteredRows);
+  const prodScores = state.filteredRows.map(r => Number(r.productivityScore || 0)).filter(v => v > 0);
+  const avgProd = prodScores.length ? prodScores.reduce((sum, v) => sum + v, 0) / prodScores.length : 0;
   el.statFiles.textContent = fmtInt(fileSet.size || state.uploadedFiles.length);
   el.statWorkers.textContent = fmtInt(workerSet.size);
   el.statRows.textContent = fmtInt(state.filteredRows.length);
@@ -590,6 +667,7 @@ function parsePremiText(text, fileName) {
     if (!nama && !nip) continue;
 
     const wKey = `${unit}__${nip}__${nama}`;
+    const prevWorker = workers.get(wKey);
     workers.set(wKey, {
       unit,
       nip,
@@ -597,7 +675,8 @@ function parsePremiText(text, fileName) {
       fileName,
       unitAsalPekerja: r['Unit Asal Pekerja'] || '',
       employee: r['Employee'] || '',
-      divisi: r['Divisi'] || ''
+      divisi: r['Divisi'] || '',
+      firstActiveDateISO: prevWorker?.firstActiveDateISO && prevWorker.firstActiveDateISO < dateISO ? prevWorker.firstActiveDateISO : dateISO
     });
 
     const wdKey = `${wKey}__${dateISO}`;
@@ -648,6 +727,9 @@ function parsePremiText(text, fileName) {
         const pct = existing.basisProrata > 0 ? (existing.quantity / existing.basisProrata) * 100 : 0;
         existing.productivityPct = pct;
         existing.productivityScore = existing.basisProrata > 0 ? productivityScore(pct) : 0;
+        existing.productivityCountable = existing.productivityScore > 0;
+        existing.firstActiveDateISO = worker.firstActiveDateISO || dateISO;
+        existing.attendanceCountable = true;
         dailyRows.push(existing);
       } else {
         dailyRows.push({
@@ -668,7 +750,10 @@ function parsePremiText(text, fileName) {
           basis1Total: 0,
           sourceRows: 0,
           productivityPct: 0,
-          productivityScore: 0
+          productivityScore: 0,
+          productivityCountable: false,
+          firstActiveDateISO: worker.firstActiveDateISO || '',
+          attendanceCountable: Boolean(worker.firstActiveDateISO && dateISO >= worker.firstActiveDateISO && isWorkdayMonToSat(dateISO))
         });
       }
     }
