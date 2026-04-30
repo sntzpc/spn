@@ -897,7 +897,7 @@ function listSelection_(sess, p) {
 }
 
 function submitSelection_(sess, p) {
-  if (!inRoles_(sess, ['ADMIN','ASISTEN','MANDOR'])) return { ok:false, error:'Role tidak diizinkan' };
+  if (!inRoles_(sess, ['ADMIN','MANAGER','KTU'])) return { ok:false, error:'Role tidak diizinkan' };
 
   const ctx = resolveProgramContext_(sess, p || {}, true);
   const activeProgramId = ctx.program_id;
