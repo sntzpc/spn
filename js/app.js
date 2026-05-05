@@ -2088,8 +2088,42 @@ async function renderMentors() {
 // ======================
 // MENTOR + PAIRING MODALS (standalone, reused by renderMentors)
 // ======================
+// FIX 2026-04-30:
+// Helper input field dibuat di scope global app.js agar dapat dipakai ulang
+// oleh openMentorModal dan openPairingModal. Sebelumnya f(...) hanya ada
+// di scope modal tertentu sehingga Tambah Pairing memunculkan:
+// ReferenceError: f is not defined.
+function f(label, id, value='', type='text') {
+  return h('div',{},[
+    h('label',{class:'text-sm text-slate-600 dark:text-slate-300'},label),
+    h('input',{
+      id,
+      type,
+      value: value == null ? '' : String(value),
+      placeholder: value == null ? '' : String(value),
+      class:'mt-1 w-full rounded-2xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 px-4 py-3 outline-none focus:ring-2 focus:ring-emerald-500'
+    })
+  ]);
+}
+
 function openMentorModal(m=null){
   const pid = currentProgramId_();
+  // FIX 2026-04-30:
+  // Helper input field harus didefinisikan di scope openMentorModal.
+  // Sebelumnya modal Mentor memanggil f(...) tetapi f hanya ada di scope modal Kandidat,
+  // sehingga saat tombol Tambah Mentor diklik muncul: ReferenceError: f is not defined.
+  function f(label, id, value='', type='text'){
+    return h('div',{},[
+      h('label',{class:'text-sm text-slate-600 dark:text-slate-300'},label),
+      h('input',{
+        id,
+        type,
+        value: value == null ? '' : String(value),
+        class:'mt-1 w-full rounded-2xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 px-4 py-3 outline-none focus:ring-2 focus:ring-emerald-500'
+      })
+    ]);
+  }
+
   const { body, close } = openModal_({
     title: m ? 'Edit Mentor' : 'Tambah Mentor',
     subtitle: 'Simpan akan memakai local-first: cache tampil dulu, server menyusul.',
