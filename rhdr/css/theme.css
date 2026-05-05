@@ -1,0 +1,200 @@
+:root {
+      --bg-body: #f8fafc;
+      --text-main: #0f172a;
+      --text-muted: #334155;
+      --panel-bg: rgba(255,255,255,.96);
+      --panel-border: rgba(100,116,139,.28);
+      --card-bg: #ffffff;
+      --card-soft: #f8fafc;
+      --input-bg: #ffffff;
+      --input-border: #94a3b8;
+      --empty-bg: #f8fafc;
+      --empty-border: #cbd5e1;
+      --hero-badge-bg: rgba(8,145,178,.10);
+      --hero-badge-border: rgba(8,145,178,.25);
+      --hero-badge-text: #0f766e;
+      --hero-title: #0f172a;
+      --hero-subtitle: #334155;
+      --hero-overlay:
+        radial-gradient(circle at top right, rgba(59,130,246,.10), transparent 25%),
+        radial-gradient(circle at left, rgba(16,185,129,.08), transparent 22%),
+        linear-gradient(180deg, #f8fafc, #e2e8f0);
+      --shadow-panel: 0 25px 50px -12px rgba(15,23,42,.10);
+      --theme-btn-bg: #ffffff;
+      --theme-btn-border: #94a3b8;
+      --theme-btn-text: #0f172a;
+      --theme-btn-hover: #eef2f7;
+      --accent-soft: #ecfeff;
+      --accent-border: #67e8f9;
+      --accent-text: #0f766e;
+      --danger-soft: #fff1f2;
+      --danger-border: #fda4af;
+      --danger-text: #be123c;
+      --success-soft: #ecfdf5;
+      --success-border: #6ee7b7;
+      --success-text: #065f46;
+    }
+
+    html[data-theme="dark"] {
+      --bg-body: #020617;
+      --text-main: #f8fafc;
+      --text-muted: #94a3b8;
+      --panel-bg: rgba(255,255,255,.05);
+      --panel-border: rgba(255,255,255,.10);
+      --card-bg: rgba(2,6,23,.70);
+      --card-soft: rgba(15,23,42,1);
+      --input-bg: rgba(15,23,42,.80);
+      --input-border: #334155;
+      --empty-bg: rgba(2,6,23,.70);
+      --empty-border: #1f2937;
+      --hero-badge-bg: rgba(6,182,212,.10);
+      --hero-badge-border: rgba(34,211,238,.25);
+      --hero-badge-text: #67e8f9;
+      --hero-title: #ffffff;
+      --hero-subtitle: #cbd5e1;
+      --hero-overlay:
+        radial-gradient(circle at top right, rgba(59,130,246,.18), transparent 25%),
+        radial-gradient(circle at left, rgba(16,185,129,.12), transparent 22%),
+        linear-gradient(180deg, #020617, #0f172a);
+      --shadow-panel: 0 25px 50px -12px rgba(0,0,0,.35);
+      --theme-btn-bg: rgba(15,23,42,.85);
+      --theme-btn-border: rgba(148,163,184,.25);
+      --theme-btn-text: #f8fafc;
+      --theme-btn-hover: rgba(30,41,59,.95);
+    }
+
+    body {
+      background: var(--bg-body) !important;
+      color: var(--text-main) !important;
+      transition: background-color .25s ease, color .25s ease;
+    }
+
+    #themeOverlay {
+      background: var(--hero-overlay) !important;
+      transition: background .25s ease;
+    }
+
+    #heroBadge {
+      background: var(--hero-badge-bg) !important;
+      border-color: var(--hero-badge-border) !important;
+      color: var(--hero-badge-text) !important;
+    }
+
+    #pageTitle, .theme-title { color: var(--hero-title) !important; }
+    #pageSubtitle, .theme-muted, .theme-muted * { color: var(--hero-subtitle) !important; }
+
+    .theme-panel {
+      background: var(--panel-bg) !important;
+      border-color: var(--panel-border) !important;
+      box-shadow: var(--shadow-panel) !important;
+      color: var(--text-main) !important;
+      transition: background-color .25s ease, border-color .25s ease, box-shadow .25s ease, color .25s ease;
+    }
+
+    .theme-card {
+      background: var(--card-bg) !important;
+      border-color: var(--empty-border) !important;
+      color: var(--text-main) !important;
+      transition: background-color .25s ease, border-color .25s ease, color .25s ease;
+    }
+
+    .theme-card-soft {
+      background: var(--card-soft) !important;
+      border-color: var(--empty-border) !important;
+      color: var(--text-main) !important;
+    }
+
+    .theme-input {
+      background: var(--input-bg) !important;
+      border-color: var(--input-border) !important;
+      color: var(--text-main) !important;
+    }
+
+    .theme-input::placeholder { color: #94a3b8 !important; }
+
+    .theme-empty {
+      background: var(--empty-bg) !important;
+      border-color: var(--empty-border) !important;
+      color: var(--text-muted) !important;
+    }
+
+    #dbStatus { color: var(--text-muted) !important; }
+
+    .theme-toggle-btn {
+      background: var(--theme-btn-bg);
+      border: 1px solid var(--theme-btn-border);
+      color: var(--theme-btn-text);
+      transition: all .2s ease;
+      backdrop-filter: blur(10px);
+    }
+
+    .theme-toggle-btn:hover { background: var(--theme-btn-hover); }
+
+    .theme-toggle-btn svg { width: 1rem; height: 1rem; display: block; }
+
+    #previewPanel .text-white,
+    #fileList .text-white { color: var(--text-main) !important; }
+
+    #previewPanel .text-slate-400,
+    #previewPanel .text-slate-500,
+    #fileList .text-slate-400,
+    #fileList .text-slate-500,
+    .theme-subtle {
+      color: var(--text-muted) !important;
+    }
+
+    #previewPanel .bg-slate-900,
+    #previewPanel .bg-slate-900\/60,
+    #fileList .bg-slate-900,
+    #fileList .bg-slate-900\/60 {
+      background: var(--card-soft) !important;
+    }
+
+    #pageSubtitle .font-semibold { color: var(--hero-title) !important; }
+
+    #outputName,
+    #dbStatus,
+    .theme-card-soft,
+    .theme-card-soft *,
+    .theme-input,
+    .theme-input * {
+      color: var(--text-main) !important;
+    }
+
+    #uploadTrigger {
+      background: var(--accent-soft) !important;
+      border-color: var(--accent-border) !important;
+      color: var(--accent-text) !important;
+    }
+
+    #summaryBadge {
+      background: var(--success-soft) !important;
+      border-color: var(--success-border) !important;
+      color: var(--success-text) !important;
+    }
+
+    #btnClearDb {
+      background: var(--danger-soft) !important;
+      border-color: var(--danger-border) !important;
+      color: var(--danger-text) !important;
+    }
+
+    #fileList button[data-action="remove"] {
+      background: var(--danger-soft) !important;
+      border-color: var(--danger-border) !important;
+      color: var(--danger-text) !important;
+    }
+
+    html[data-theme="light"] #previewPanel .border-slate-800,
+    html[data-theme="light"] #fileList .border-slate-800 {
+      border-color: #cbd5e1 !important;
+    }
+
+    html[data-theme="light"] #previewPanel .border-b,
+    html[data-theme="light"] #fileList .border-b {
+      border-color: #cbd5e1 !important;
+    }
+
+    html[data-theme="light"] #previewPanel .text-slate-500 {
+      color: #64748b !important;
+    }
