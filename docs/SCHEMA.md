@@ -30,7 +30,7 @@ Contoh key penting:
 | user_id | ID unik |
 | nik | NIK / username |
 | name | nama |
-| role | `ADMIN` / `ASISTEN` / `MANDOR` / `MENTOR` / `PESERTA` |
+| role | `ADMIN` / `MANAGER` / `ASKEP` / `KTU` / `ASISTEN` / `MANDOR` / `MENTOR` / `PESERTA` |
 | estate | opsional |
 | unit | opsional |
 | active | TRUE/FALSE |

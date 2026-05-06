@@ -2704,12 +2704,8 @@ function respond_(p, data) {
 }
 
 function inRoles_(sess, roles) {
-  const r = String(sess && sess.user && sess.user.role ? sess.user.role : '').trim().toUpperCase();
-  const norm = (roles || []).map(x => String(x||'').trim().toUpperCase());
-
-  // treat ADMINISTRATOR as ADMIN
-  if (r === 'ADMINISTRATOR' && norm.indexOf('ADMIN') >= 0) return true;
-
+  const r = roleNorm_(sess && sess.user && sess.user.role);
+  const norm = (roles || []).map(x => roleNorm_(x));
   return norm.indexOf(r) >= 0;
 }
 
@@ -2805,6 +2801,9 @@ function allowedActionsForRole_(roleNorm) {
 function roleNorm_(role) {
   const r = String(role || '').trim().toUpperCase();
   if (r === 'ADMINISTRATOR') return 'ADMIN';
+  // ASKEP menggunakan otorisasi yang sama dengan MANAGER.
+  // Role asli tetap boleh ditulis ASKEP di Sheet Users, namun seluruh izin dan scope diperlakukan sebagai MANAGER.
+  if (r === 'ASKEP') return 'MANAGER';
   return r;
 }
 
@@ -3115,7 +3114,7 @@ function isAdmin_(sess) {
 }
 
 function isManager_(sess) {
-  const role = String(sess && sess.user && sess.user.role || '').toUpperCase();
+  const role = roleNorm_(sess && sess.user && sess.user.role);
   return role === 'MANAGER';
 }
 

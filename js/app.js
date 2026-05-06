@@ -78,7 +78,9 @@ function navChip(it) {
 function buildNav(role) {
   const R = (r)=>{
     const x = String(r||'').trim().toUpperCase();
-    return x === 'ADMINISTRATOR' ? 'ADMIN' : x;
+    if (x === 'ADMINISTRATOR') return 'ADMIN';
+    if (x === 'ASKEP') return 'MANAGER';
+    return x;
   };
   role = R(role);
 
@@ -325,7 +327,7 @@ function renderGlobalHeader_() {
   host.innerHTML = '';
 
   const role = state.user?.role || '';
-  const roleN = (String(role||'').trim().toUpperCase()==='ADMINISTRATOR') ? 'ADMIN' : String(role||'').trim().toUpperCase();
+  const roleN = roleNormFront_(role);
   const myEstate = state.myEstate || state.user?.estate || '';
   const activePid = state.myActiveProgramId || '';
 
@@ -687,7 +689,9 @@ function cacheInfoLine_(store, meta, extraText='') {
 
 function roleNormFront_(role){
   const r = String(role||'').trim().toUpperCase();
-  return (r === 'ADMINISTRATOR') ? 'ADMIN' : r;
+  if (r === 'ADMINISTRATOR') return 'ADMIN';
+  if (r === 'ASKEP') return 'MANAGER';
+  return r;
 }
 
 
@@ -985,9 +989,7 @@ async function renderPrograms(opts={}) {
   const skipBg = !!opts.skipBg;
   const v = setViewTitle('Program', 'Kelola batch Sekolah Pemanen');
 
-  const roleN = (String(state.user?.role||'').trim().toUpperCase()==='ADMINISTRATOR')
-    ? 'ADMIN'
-    : String(state.user?.role||'').trim().toUpperCase();
+  const roleN = roleNormFront_(state.user?.role || '');
 
   const isAdmin = roleN === 'ADMIN';
   const isManager = roleN === 'MANAGER';
@@ -1151,9 +1153,7 @@ async function renderPrograms(opts={}) {
 }
 
 function openProgramModal() {
-  const roleN = (String(state.user?.role||'').trim().toUpperCase()==='ADMINISTRATOR')
-    ? 'ADMIN'
-    : String(state.user?.role||'').trim().toUpperCase();
+  const roleN = roleNormFront_(state.user?.role || '');
 
   const isManager = roleN === 'MANAGER';
   const myEstate = String(state.myEstate || (state.user && state.user.estate) || '').trim().toUpperCase();
@@ -1255,9 +1255,7 @@ async function renderCandidates() {
   const v = setViewTitle('Calon Pemanen', 'Administrasi & verifikasi berkas');
   const pid = currentProgramId_();
 
-    const roleN = (String(state.user?.role||'').trim().toUpperCase()==='ADMINISTRATOR')
-    ? 'ADMIN'
-    : String(state.user?.role||'').trim().toUpperCase();
+    const roleN = roleNormFront_(state.user?.role || '');
 
   const canAddCandidate = ['ADMIN','MANAGER','KTU'].includes(roleN);
   const canVerifyCandidate = ['ADMIN'].includes(roleN);
@@ -1352,9 +1350,7 @@ async function verifyCandidate(c, status) {
 }
 
 function openCandidateModal(cand=null) {
-  const roleN = (String(state.user?.role||'').trim().toUpperCase()==='ADMINISTRATOR')
-    ? 'ADMIN'
-    : String(state.user?.role||'').trim().toUpperCase();
+  const roleN = roleNormFront_(state.user?.role || '');
 
   const canAddCandidate = ['ADMIN','MANAGER','KTU'].includes(roleN);
   if (!canAddCandidate) {
@@ -1868,7 +1864,7 @@ async function renderParticipants() {
 
   const v = setViewTitle('Peserta', 'Daftar peserta aktif (A/B) per program');
   const pid = currentProgramId_();
-  const roleN = (String(state.user?.role||'').trim().toUpperCase()==='ADMINISTRATOR') ? 'ADMIN' : String(state.user?.role||'').trim().toUpperCase();
+  const roleN = roleNormFront_(state.user?.role || '');
   const isAdmin = roleN === 'ADMIN';
   const isManager = roleN === 'MANAGER';
   const canManagePrograms = isAdmin || isManager;
@@ -1983,7 +1979,7 @@ async function renderMentors() {
 
   const v = setViewTitle('Mentor & Pairing', 'Kelola mentor dan pairing 1-on-1 untuk peserta kategori B');
   const pid = currentProgramId_();
-  const roleN = (String(state.user?.role||'').trim().toUpperCase()==='ADMINISTRATOR') ? 'ADMIN' : String(state.user?.role||'').trim().toUpperCase();
+  const roleN = roleNormFront_(state.user?.role || '');
   const canEditMentor = (roleN==='ADMIN' || roleN==='MANAGER' || roleN==='ASISTEN');
 
   const info = h('div',{class:'mb-3 text-xs text-slate-500 dark:text-slate-400'},'Memuat dari cache...');
@@ -3068,7 +3064,7 @@ async function renderCertificates(){
 
   const v = setViewTitle('Sertifikat', 'Terbitkan sertifikat peserta & mentor');
   const pid = currentProgramId_();
-  const roleN = (String(state.user?.role||'').trim().toUpperCase()==='ADMINISTRATOR') ? 'ADMIN' : String(state.user?.role||'').trim().toUpperCase();
+  const roleN = roleNormFront_(state.user?.role || '');
   const canIssue = (roleN==='ADMIN' || roleN==='MANAGER' || roleN==='KTU');
 
   const info = h('div',{class:'mb-3 text-xs text-slate-500 dark:text-slate-400'},'Memuat dari cache...');
@@ -4053,7 +4049,7 @@ function openUserModal(user, onDone){
   body.appendChild(h('div',{class:'grid md:grid-cols-2 gap-3'},[
     ufield('NIK','u_nik', user?.nik||''),
     ufield('Nama','u_name', user?.name||''),
-    ufield('Role (ADMIN/ASISTEN/MANDOR/MENTOR)','u_role', user?.role||'MANDOR'),
+    ufield('Role (ADMIN/MANAGER/ASKEP/KTU/ASISTEN/MANDOR/MENTOR/PESERTA)','u_role', user?.role||'MANDOR'),
     ufield('Active (TRUE/FALSE)','u_active', String(user?.active||'TRUE')),
     uEstateSelect('Estate (Kode)','u_estate', user?.estate||''),
     uDivisiField('Divisi (angka)','u_divisi', user?.unit||user?.divisi||''),
