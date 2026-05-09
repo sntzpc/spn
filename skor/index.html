@@ -206,6 +206,96 @@
 
       </div>
     </div>
+
+    <div class="mt-6 bg-white rounded-3xl shadow-sm border border-slate-200 p-5">
+      <div class="flex flex-col lg:flex-row lg:items-end lg:justify-between gap-4 mb-5">
+        <div>
+          <div class="inline-flex items-center rounded-full bg-amber-100 text-amber-800 px-3 py-1 text-xs font-bold mb-2">Halaman Tambahan</div>
+          <h2 class="text-xl md:text-2xl font-bold">Perbandingan BHP vs Premi</h2>
+          <p class="text-sm text-slate-500 mt-1 max-w-4xl">Upload Data Input Hasil Panen/BHP dan Data Perhitungan Premi untuk membandingkan Brondol dan Janjang berdasarkan Unit, Tanggal, NIP, Nama, dan Blok. Hasil dapat di-download ke Excel berisi sheet matrik dan detail.</p>
+        </div>
+        <div class="flex flex-wrap gap-2">
+          <button id="btnRunCompare" class="px-4 py-2.5 rounded-xl bg-amber-600 hover:bg-amber-700 text-white font-semibold shadow">Hitung Selisih</button>
+          <button id="btnDownloadCompare" class="px-4 py-2.5 rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white font-semibold shadow disabled:opacity-50 disabled:cursor-not-allowed" disabled>Download Perbandingan</button>
+        </div>
+      </div>
+
+      <div class="grid lg:grid-cols-2 gap-4">
+        <label class="block border-2 border-dashed border-amber-300 rounded-2xl p-5 hover:bg-amber-50 transition cursor-pointer">
+          <input id="bhpCompareInput" type="file" class="hidden" accept=".xls,.xlsx,.txt" />
+          <div class="font-bold text-amber-700">1. Upload Data BHP / Input Hasil Panen</div>
+          <div id="bhpCompareInfo" class="text-sm text-slate-500 mt-1">Belum ada file BHP dipilih.</div>
+          <div class="text-xs text-slate-400 mt-2">Kolom dipakai: Unit Lokasi Kerja, Tgl, NIP, Nama, BLOK, KG Brondol, Janjang Netto, % Brondol Aktual, % Brondol Perhitungan.</div>
+        </label>
+        <label class="block border-2 border-dashed border-blue-300 rounded-2xl p-5 hover:bg-blue-50 transition cursor-pointer">
+          <input id="premiCompareInput" type="file" class="hidden" accept=".xls,.xlsx,.txt" />
+          <div class="font-bold text-blue-700">2. Upload Data Premi</div>
+          <div id="premiCompareInfo" class="text-sm text-slate-500 mt-1">Belum ada file Premi dipilih.</div>
+          <div class="text-xs text-slate-400 mt-2">Brondol = Quantity saat Quantity (Jjg) = 0. Janjang = Quantity (Jjg). Premi = Rp. Total Premi.</div>
+        </label>
+      </div>
+
+      <div id="compareStats" class="grid sm:grid-cols-2 xl:grid-cols-6 gap-3 mt-5"></div>
+
+      <div class="grid xl:grid-cols-2 gap-5 mt-5">
+        <div class="rounded-2xl border border-slate-200 overflow-hidden">
+          <div class="px-4 py-3 bg-slate-900 text-white font-bold">Matrik Brondol</div>
+          <div class="overflow-auto max-h-[520px]">
+            <table class="min-w-[1180px] text-xs">
+              <thead class="bg-slate-100 sticky top-0">
+                <tr>
+                  <th class="px-2 py-2 text-left">Unit</th><th class="px-2 py-2 text-left">Tanggal</th><th class="px-2 py-2 text-left">NIP</th><th class="px-2 py-2 text-left">Nama</th><th class="px-2 py-2 text-left">Blok</th>
+                  <th class="px-2 py-2 text-right">BHP</th><th class="px-2 py-2 text-right">Premi</th><th class="px-2 py-2 text-right">Selisih</th>
+                  <th class="px-2 py-2 text-right">Rp BHP</th><th class="px-2 py-2 text-right">Rp Premi</th><th class="px-2 py-2 text-right">Selisih Rp</th>
+                </tr>
+              </thead>
+              <tbody id="compareBrondolBody"></tbody>
+            </table>
+          </div>
+        </div>
+        <div class="rounded-2xl border border-slate-200 overflow-hidden">
+          <div class="px-4 py-3 bg-slate-900 text-white font-bold">Matrik Janjang</div>
+          <div class="overflow-auto max-h-[520px]">
+            <table class="min-w-[1180px] text-xs">
+              <thead class="bg-slate-100 sticky top-0">
+                <tr>
+                  <th class="px-2 py-2 text-left">Unit</th><th class="px-2 py-2 text-left">Tanggal</th><th class="px-2 py-2 text-left">NIP</th><th class="px-2 py-2 text-left">Nama</th><th class="px-2 py-2 text-left">Blok</th>
+                  <th class="px-2 py-2 text-right">BHP</th><th class="px-2 py-2 text-right">Premi</th><th class="px-2 py-2 text-right">Selisih</th>
+                  <th class="px-2 py-2 text-right">Rp BHP</th><th class="px-2 py-2 text-right">Rp Premi</th><th class="px-2 py-2 text-right">Selisih Rp</th>
+                </tr>
+              </thead>
+              <tbody id="compareJanjangBody"></tbody>
+            </table>
+          </div>
+        </div>
+      </div>
+
+      <div class="rounded-2xl border border-slate-200 overflow-hidden mt-5">
+        <div class="px-4 py-3 bg-slate-100 flex flex-col md:flex-row md:items-center md:justify-between gap-2">
+          <div>
+            <div class="font-bold">Detail Gabungan</div>
+            <div class="text-xs text-slate-500">Termasuk % Brondol Aktual dan % Brondol Perhitungan dari data BHP.</div>
+          </div>
+          <input id="compareSearchInput" type="text" placeholder="Cari unit / nama / NIP / blok..." class="w-full md:w-80 rounded-xl border-slate-300 focus:border-amber-500 focus:ring-amber-500 text-sm" />
+        </div>
+        <div class="overflow-auto max-h-[560px]">
+          <table class="min-w-[1600px] text-xs">
+            <thead class="bg-slate-900 text-white sticky top-0">
+              <tr>
+                <th class="px-2 py-2 text-left">Unit</th><th class="px-2 py-2 text-left">Tanggal</th><th class="px-2 py-2 text-left">NIP</th><th class="px-2 py-2 text-left">Nama</th><th class="px-2 py-2 text-left">Blok</th>
+                <th class="px-2 py-2 text-right">BHP Brondol</th><th class="px-2 py-2 text-right">Premi Brondol</th><th class="px-2 py-2 text-right">Selisih Brondol</th>
+                <th class="px-2 py-2 text-right">BHP Jjg</th><th class="px-2 py-2 text-right">Premi Jjg</th><th class="px-2 py-2 text-right">Selisih Jjg</th>
+                <th class="px-2 py-2 text-right">% Brd Aktual</th><th class="px-2 py-2 text-right">% Brd Hitung</th>
+                <th class="px-2 py-2 text-right">Rp BHP</th><th class="px-2 py-2 text-right">Rp Premi</th><th class="px-2 py-2 text-right">Selisih Rp</th>
+              </tr>
+            </thead>
+            <tbody id="compareDetailBody"></tbody>
+          </table>
+        </div>
+        <div id="compareFoot" class="text-xs text-slate-500 px-4 py-3"></div>
+      </div>
+    </div>
+
   </div>
 
   <script src="./app.js"></script>

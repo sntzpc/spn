@@ -11,6 +11,11 @@ const state = {
   unitRecap: [],
   workerRecap: [],
   unitMatrices: [],
+  compareRows: [],
+  compareFilteredRows: [],
+  compareRawBhpRows: [],
+  compareRawPremiRows: [],
+  compareFiles: { bhp: null, premi: null },
   filters: {
     month: '',
     unit: '',
@@ -45,7 +50,19 @@ const el = {
   statRows: document.getElementById('statRows'),
   statProd: document.getElementById('statProd'),
   loadingOverlay: document.getElementById('loadingOverlay'),
-  loadingText: document.getElementById('loadingText')
+  loadingText: document.getElementById('loadingText'),
+  bhpCompareInput: document.getElementById('bhpCompareInput'),
+  premiCompareInput: document.getElementById('premiCompareInput'),
+  bhpCompareInfo: document.getElementById('bhpCompareInfo'),
+  premiCompareInfo: document.getElementById('premiCompareInfo'),
+  btnRunCompare: document.getElementById('btnRunCompare'),
+  btnDownloadCompare: document.getElementById('btnDownloadCompare'),
+  compareStats: document.getElementById('compareStats'),
+  compareBrondolBody: document.getElementById('compareBrondolBody'),
+  compareJanjangBody: document.getElementById('compareJanjangBody'),
+  compareDetailBody: document.getElementById('compareDetailBody'),
+  compareSearchInput: document.getElementById('compareSearchInput'),
+  compareFoot: document.getElementById('compareFoot')
 };
 
 function showLoading(text = 'Mohon tunggu sebentar.') {
@@ -1054,6 +1071,518 @@ async function clearLocalData() {
   }
 }
 
+
+
+// =========================
+// PERBANDINGAN BHP VS PREMI
+// =========================
+function normalizeCompareText(value) {
+  return String(value || '').replace(/\u00a0/g, ' ').replace(/\s+/g, ' ').trim();
+}
+function normalizeNip(value) {
+  const s = normalizeCompareText(value);
+  return s.replace(/^0+(?=\d)/, '') || s;
+}
+function normalizeBlock(value) {
+  return normalizeCompareText(value).toUpperCase();
+}
+function normalizeDivisiValue(value) {
+  const s = normalizeCompareText(value);
+  if (!s) return '';
+  const m = s.match(/\d+/);
+  return m ? String(Number(m[0])) : s.toUpperCase();
+}
+function divisiFromKemandoran(value) {
+  const s = normalizeCompareText(value);
+  const m = s.match(/\d{2}/);
+  if (!m) return '';
+  const code = Number(m[0]);
+  // Kode kemandoran 11 = Divisi 1, 12 = Divisi 2, 13 = Divisi 3, dst.
+  if (code >= 11) return String(code - 10);
+  return String(code);
+}
+function pickCompareDivisi(row) {
+  const bhp = normalizeDivisiValue(row?.bhpDivisi);
+  const premi = normalizeDivisiValue(row?.premiDivisi);
+  return bhp || premi || '';
+}
+function compareKey(unit, dateISO, nip, nama, blok) {
+  return [normalizeCompareText(unit).toUpperCase(), dateISO || '', normalizeNip(nip), normalizeCompareText(nama).toUpperCase(), normalizeBlock(blok)].join('__');
+}
+function findHeaderLine(lines, requiredWords) {
+  return lines.findIndex(line => requiredWords.every(w => line.toLowerCase().includes(String(w).toLowerCase())));
+}
+function sumPremiRpFromRow(row) {
+  let total = parseDec(row['Rp. Total Premi']);
+  if (total > 0) return total;
+  for (let i = 1; i <= 5; i++) {
+    total += parseDec(row[`Rp. Siap Borong ${i}`]);
+    total += parseDec(row[`Rp. Lebih Borong ${i}`]);
+  }
+  return total;
+}
+function ensureCompareAgg(map, base) {
+  const key = compareKey(base.unit, base.dateISO, base.nip, base.nama, base.blok);
+  if (!map.has(key)) {
+    map.set(key, {
+      key,
+      unit: normalizeCompareText(base.unit).toUpperCase(),
+      dateISO: base.dateISO || '',
+      dateDisplay: base.dateDisplay || '',
+      nip: normalizeNip(base.nip),
+      nama: normalizeCompareText(base.nama).toUpperCase(),
+      blok: normalizeBlock(base.blok),
+      bhpDivisi: normalizeDivisiValue(base.bhpDivisi || base.divisi || ''),
+      premiDivisi: normalizeDivisiValue(base.premiDivisi || base.divisi || ''),
+      divisi: normalizeDivisiValue(base.divisi || base.bhpDivisi || base.premiDivisi || ''),
+      bhpBrondol: 0,
+      bhpJanjang: 0,
+      bhpPctAktualSum: 0,
+      bhpPctHitungSum: 0,
+      bhpPctCount: 0,
+      premiBrondol: 0,
+      premiJanjang: 0,
+      premiBrondolRp: 0,
+      premiJanjangRp: 0,
+      bhpRows: 0,
+      premiRows: 0
+    });
+  }
+  return map.get(key);
+}
+function parseBHPCompareText(text, fileName) {
+  const lines = text.replace(/\r/g, '').split('\n');
+  const headerIdx = findHeaderLine(lines, ['Unit Lokasi Kerja', 'KG Brondol', 'Janjang Netto']);
+  if (headerIdx < 0) throw new Error(`Header BHP tidak ditemukan pada file ${fileName}`);
+  const headers = lines[headerIdx].split('\t').map(normalizeHeaderName);
+  const idx = {
+    unit: findHeaderIndex(headers, ['Unit Lokasi Kerja', 'Unit']),
+    date: findHeaderIndex(headers, ['Tgl', 'Tanggal']),
+    kemandoran: findHeaderIndex(headers, ['Kemandoran']),
+    nip: findHeaderIndex(headers, ['NIP']),
+    nama: findHeaderIndex(headers, ['Nama', 'Nama Pekerja']),
+    blok: findHeaderIndex(headers, ['BLOK', 'Blok']),
+    brondol: findHeaderIndex(headers, ['KG Brondol', 'Kg Brondol']),
+    janjang: findHeaderIndex(headers, ['Janjang Netto', 'Janjang Net']),
+    pctAktual: findHeaderIndex(headers, ['% Brondol Aktual']),
+    pctHitung: findHeaderIndex(headers, ['% Brondol Perhitungan'])
+  };
+  const required = ['unit', 'date', 'nip', 'nama', 'blok', 'brondol', 'janjang'];
+  const missing = required.filter(k => idx[k] < 0);
+  if (missing.length) throw new Error(`Kolom BHP belum lengkap: ${missing.join(', ')}`);
+
+  const map = new Map();
+  const rawRows = [];
+  for (let i = headerIdx + 1; i < lines.length; i++) {
+    const parts = lines[i].split('\t');
+    const d = parseIDDate(parts[idx.date]);
+    if (!d) continue;
+    const unit = normalizeCompareText(parts[idx.unit]);
+    const divisi = idx.kemandoran >= 0 ? divisiFromKemandoran(parts[idx.kemandoran]) : '';
+    const nip = normalizeNip(parts[idx.nip]);
+    const nama = normalizeCompareText(parts[idx.nama]);
+    const blok = normalizeBlock(parts[idx.blok]);
+    if (!unit || (!nip && !nama) || !blok) continue;
+    const dateISO = toISO(d);
+    const dateDisplay = d.toLocaleDateString('id-ID');
+    const kgBrondol = parseDec(parts[idx.brondol]);
+    const janjangNetto = parseDec(parts[idx.janjang]);
+    const pctAktual = idx.pctAktual >= 0 ? parseDec(parts[idx.pctAktual]) : 0;
+    const pctHitung = idx.pctHitung >= 0 ? parseDec(parts[idx.pctHitung]) : 0;
+    const agg = ensureCompareAgg(map, { unit, divisi, bhpDivisi: divisi, dateISO, dateDisplay, nip, nama, blok });
+    if (divisi && !agg.bhpDivisi) agg.bhpDivisi = divisi;
+    if (divisi && !agg.divisi) agg.divisi = divisi;
+    agg.bhpBrondol += kgBrondol;
+    agg.bhpJanjang += janjangNetto;
+    agg.bhpRows += 1;
+    if (pctAktual || pctHitung) {
+      agg.bhpPctAktualSum += pctAktual;
+      agg.bhpPctHitungSum += pctHitung;
+      agg.bhpPctCount += 1;
+    }
+    rawRows.push({ fileName, unit, divisi, dateISO, dateDisplay, nip, nama, blok, kgBrondol, janjangNetto, pctAktual, pctHitung });
+  }
+  return { fileName, rows: Array.from(map.values()), rawRows };
+}
+function parsePremiCompareText(text, fileName) {
+  const lines = text.replace(/\r/g, '').split('\n');
+  const headerIdx = findHeaderLine(lines, ['Nama Pekerja', 'Tanggal', 'Quantity', 'Quantity (Jjg)']);
+  if (headerIdx < 0) throw new Error(`Header Premi tidak ditemukan pada file ${fileName}`);
+  const headers = lines[headerIdx].split('\t').map(normalizeHeaderName);
+  const idx = {
+    unit: findHeaderIndex(headers, ['Unit Asal Pekerja', 'Unit']),
+    date: findHeaderIndex(headers, ['Tanggal', 'Tgl']),
+    nip: findHeaderIndex(headers, ['NIP']),
+    nama: findHeaderIndex(headers, ['Nama Pekerja', 'Nama']),
+    divisi: findHeaderIndex(headers, ['Divisi']),
+    blok: findHeaderIndex(headers, ['Blok', 'BLOK']),
+    qty: findHeaderIndex(headers, ['Quantity']),
+    qtyJjg: findHeaderIndex(headers, ['Quantity (Jjg)']),
+    rpTotal: findHeaderIndex(headers, ['Rp. Total Premi'])
+  };
+  const required = ['unit', 'date', 'nip', 'nama', 'blok', 'qty', 'qtyJjg'];
+  const missing = required.filter(k => idx[k] < 0);
+  if (missing.length) throw new Error(`Kolom Premi belum lengkap: ${missing.join(', ')}`);
+
+  const map = new Map();
+  const rawRows = [];
+  let i = headerIdx + 1;
+  while (i < lines.length) {
+    const parts = lines[i].split('\t');
+    const d = parseIDDate(parts[idx.date]);
+    if (!d) { i += 1; continue; }
+    const row = {};
+    for (let c = 0; c < headers.length; c++) {
+      const key = headers[c];
+      if (key) row[key] = normalizeHeaderName(parts[c] || '');
+    }
+    const unit = normalizeCompareText(parts[idx.unit]);
+    const divisi = idx.divisi >= 0 ? normalizeDivisiValue(parts[idx.divisi]) : '';
+    const nip = normalizeNip(parts[idx.nip]);
+    const nama = normalizeCompareText(parts[idx.nama]);
+    const blok = normalizeBlock(parts[idx.blok]);
+    if (!unit || (!nip && !nama) || !blok) { i += 1; continue; }
+    const dateISO = toISO(d);
+    const dateDisplay = d.toLocaleDateString('id-ID');
+    const qty = parseDec(parts[idx.qty]);
+    const qtyJjg = parseDec(parts[idx.qtyJjg]);
+    const rpTotal = sumPremiRpFromRow(row);
+    const agg = ensureCompareAgg(map, { unit, divisi, premiDivisi: divisi, dateISO, dateDisplay, nip, nama, blok });
+    if (divisi && !agg.premiDivisi) agg.premiDivisi = divisi;
+    if (divisi && !agg.divisi) agg.divisi = divisi;
+    if (qtyJjg > 0) {
+      agg.premiJanjang += qtyJjg;
+      agg.premiJanjangRp += rpTotal;
+    } else {
+      agg.premiBrondol += qty;
+      agg.premiBrondolRp += rpTotal;
+    }
+    agg.premiRows += 1;
+    rawRows.push({ fileName, unit, divisi, dateISO, dateDisplay, nip, nama, blok, quantity: qty, quantityJjg: qtyJjg, jenis: qtyJjg > 0 ? 'JANJANG' : 'BRONDOL', rpTotal });
+
+    const nextLine = lines[i + 1] || '';
+    const nextParts = nextLine.split('\t');
+    const nextDate = idx.date >= 0 ? normalizeHeaderName(nextParts[idx.date] || '') : '';
+    i += (nextLine.trim() && !parseIDDate(nextDate)) ? 2 : 1;
+  }
+  return { fileName, rows: Array.from(map.values()), rawRows };
+}
+function buildCompareRows(bhpParsed, premiParsed) {
+  const map = new Map();
+  for (const r of bhpParsed.rows) map.set(r.key, { ...r });
+  for (const r of premiParsed.rows) {
+    const cur = map.get(r.key) || { ...r, bhpBrondol: 0, bhpJanjang: 0, bhpPctAktualSum: 0, bhpPctHitungSum: 0, bhpPctCount: 0, bhpRows: 0 };
+    if (r.premiDivisi && !cur.premiDivisi) cur.premiDivisi = r.premiDivisi;
+    if (r.divisi && !cur.divisi) cur.divisi = r.divisi;
+    cur.premiBrondol += r.premiBrondol || 0;
+    cur.premiJanjang += r.premiJanjang || 0;
+    cur.premiBrondolRp += r.premiBrondolRp || 0;
+    cur.premiJanjangRp += r.premiJanjangRp || 0;
+    cur.premiRows += r.premiRows || 0;
+    map.set(r.key, cur);
+  }
+  return Array.from(map.values()).map(r => {
+    const brondolRate = r.premiBrondol > 0 ? r.premiBrondolRp / r.premiBrondol : 0;
+    const janjangRate = r.premiJanjang > 0 ? r.premiJanjangRp / r.premiJanjang : 0;
+    const bhpBrondolRp = r.bhpBrondol * brondolRate;
+    const bhpJanjangRp = r.bhpJanjang * janjangRate;
+    const totalBhpRp = bhpBrondolRp + bhpJanjangRp;
+    const totalPremiRp = r.premiBrondolRp + r.premiJanjangRp;
+    return {
+      ...r,
+      divisi: pickCompareDivisi(r),
+      pctAktualAvg: r.bhpPctCount ? r.bhpPctAktualSum / r.bhpPctCount : 0,
+      pctHitungAvg: r.bhpPctCount ? r.bhpPctHitungSum / r.bhpPctCount : 0,
+      brondolRate,
+      janjangRate,
+      selisihBrondol: r.bhpBrondol - r.premiBrondol,
+      selisihJanjang: r.bhpJanjang - r.premiJanjang,
+      bhpBrondolRp,
+      bhpJanjangRp,
+      selisihBrondolRp: bhpBrondolRp - r.premiBrondolRp,
+      selisihJanjangRp: bhpJanjangRp - r.premiJanjangRp,
+      totalBhpRp,
+      totalPremiRp,
+      totalSelisihRp: totalBhpRp - totalPremiRp,
+      totalSelisihData: (r.bhpBrondol - r.premiBrondol) + (r.bhpJanjang - r.premiJanjang)
+    };
+  }).sort((a, b) => a.unit.localeCompare(b.unit) || String(a.divisi || '').localeCompare(String(b.divisi || ''), 'id') || a.dateISO.localeCompare(b.dateISO) || a.nama.localeCompare(b.nama) || a.blok.localeCompare(b.blok));
+}
+function fmtRp(n) {
+  return Number(n || 0).toLocaleString('id-ID', { maximumFractionDigits: 2 });
+}
+function diffClass(n) {
+  const x = Number(n || 0);
+  if (x > 0) return 'text-emerald-700 font-bold';
+  if (x < 0) return 'text-rose-700 font-bold';
+  return 'text-slate-600';
+}
+function renderCompareStats(rows) {
+  if (!el.compareStats) return;
+  if (!rows.length) {
+    el.compareStats.innerHTML = `<div class="col-span-full rounded-2xl bg-slate-50 border border-slate-200 p-4 text-slate-500 text-sm">Belum ada hasil perbandingan.</div>`;
+    return;
+  }
+  const sum = rows.reduce((a, r) => {
+    a.bhpBrondol += r.bhpBrondol; a.premiBrondol += r.premiBrondol;
+    a.bhpJanjang += r.bhpJanjang; a.premiJanjang += r.premiJanjang;
+    a.bhpRp += r.totalBhpRp; a.premiRp += r.totalPremiRp;
+    return a;
+  }, { bhpBrondol:0, premiBrondol:0, bhpJanjang:0, premiJanjang:0, bhpRp:0, premiRp:0 });
+  const cards = [
+    ['Brondol BHP', fmtNum(sum.bhpBrondol, 2)], ['Brondol Premi', fmtNum(sum.premiBrondol, 2)],
+    ['Janjang BHP', fmtNum(sum.bhpJanjang, 2)], ['Janjang Premi', fmtNum(sum.premiJanjang, 2)],
+    ['Selisih Data', fmtNum((sum.bhpBrondol-sum.premiBrondol)+(sum.bhpJanjang-sum.premiJanjang), 2)],
+    ['Selisih Rp', fmtRp(sum.bhpRp - sum.premiRp)]
+  ];
+  el.compareStats.innerHTML = cards.map(([label, value]) => `<div class="rounded-2xl bg-slate-50 border border-slate-200 p-4"><div class="text-xs text-slate-500">${label}</div><div class="text-xl font-bold mt-1">${value}</div></div>`).join('');
+}
+function compareMatrixRow(r, type) {
+  const isB = type === 'brondol';
+  const bhp = isB ? r.bhpBrondol : r.bhpJanjang;
+  const premi = isB ? r.premiBrondol : r.premiJanjang;
+  const diff = isB ? r.selisihBrondol : r.selisihJanjang;
+  const rpBhp = isB ? r.bhpBrondolRp : r.bhpJanjangRp;
+  const rpPremi = isB ? r.premiBrondolRp : r.premiJanjangRp;
+  const diffRp = isB ? r.selisihBrondolRp : r.selisihJanjangRp;
+  return `<tr class="border-t border-slate-200"><td class="px-2 py-1">${escapeHtml(r.unit)}</td><td class="px-2 py-1">${escapeHtml(r.dateDisplay)}</td><td class="px-2 py-1">${escapeHtml(r.nip)}</td><td class="px-2 py-1 whitespace-nowrap">${escapeHtml(r.nama)}</td><td class="px-2 py-1">${escapeHtml(r.blok)}</td><td class="px-2 py-1 text-right">${fmtNum(bhp,2)}</td><td class="px-2 py-1 text-right">${fmtNum(premi,2)}</td><td class="px-2 py-1 text-right ${diffClass(diff)}">${fmtNum(diff,2)}</td><td class="px-2 py-1 text-right">${fmtRp(rpBhp)}</td><td class="px-2 py-1 text-right">${fmtRp(rpPremi)}</td><td class="px-2 py-1 text-right ${diffClass(diffRp)}">${fmtRp(diffRp)}</td></tr>`;
+}
+function renderCompareResults() {
+  const q = normalizeKey(el.compareSearchInput?.value || '');
+  const rows = q ? state.compareRows.filter(r => normalizeKey(`${r.unit} ${r.dateDisplay} ${r.nip} ${r.nama} ${r.blok}`).includes(q)) : state.compareRows;
+  state.compareFilteredRows = rows;
+  renderCompareStats(rows);
+  if (!rows.length) {
+    const empty = `<tr><td colspan="11" class="px-4 py-6 text-center text-slate-500">Belum ada data.</td></tr>`;
+    if (el.compareBrondolBody) el.compareBrondolBody.innerHTML = empty;
+    if (el.compareJanjangBody) el.compareJanjangBody.innerHTML = empty;
+    if (el.compareDetailBody) el.compareDetailBody.innerHTML = `<tr><td colspan="16" class="px-4 py-6 text-center text-slate-500">Belum ada data.</td></tr>`;
+    if (el.compareFoot) el.compareFoot.textContent = '';
+    return;
+  }
+  const limited = rows.slice(0, 1000);
+  el.compareBrondolBody.innerHTML = limited.map(r => compareMatrixRow(r, 'brondol')).join('');
+  el.compareJanjangBody.innerHTML = limited.map(r => compareMatrixRow(r, 'janjang')).join('');
+  el.compareDetailBody.innerHTML = limited.map(r => `<tr class="border-t border-slate-200"><td class="px-2 py-1">${escapeHtml(r.unit)}</td><td class="px-2 py-1">${escapeHtml(r.dateDisplay)}</td><td class="px-2 py-1">${escapeHtml(r.nip)}</td><td class="px-2 py-1 whitespace-nowrap">${escapeHtml(r.nama)}</td><td class="px-2 py-1">${escapeHtml(r.blok)}</td><td class="px-2 py-1 text-right">${fmtNum(r.bhpBrondol,2)}</td><td class="px-2 py-1 text-right">${fmtNum(r.premiBrondol,2)}</td><td class="px-2 py-1 text-right ${diffClass(r.selisihBrondol)}">${fmtNum(r.selisihBrondol,2)}</td><td class="px-2 py-1 text-right">${fmtNum(r.bhpJanjang,2)}</td><td class="px-2 py-1 text-right">${fmtNum(r.premiJanjang,2)}</td><td class="px-2 py-1 text-right ${diffClass(r.selisihJanjang)}">${fmtNum(r.selisihJanjang,2)}</td><td class="px-2 py-1 text-right">${fmtNum(r.pctAktualAvg,2)}</td><td class="px-2 py-1 text-right">${fmtNum(r.pctHitungAvg,2)}</td><td class="px-2 py-1 text-right">${fmtRp(r.totalBhpRp)}</td><td class="px-2 py-1 text-right">${fmtRp(r.totalPremiRp)}</td><td class="px-2 py-1 text-right ${diffClass(r.totalSelisihRp)}">${fmtRp(r.totalSelisihRp)}</td></tr>`).join('');
+  el.compareFoot.textContent = `Menampilkan ${fmtInt(limited.length)} dari ${fmtInt(rows.length)} baris hasil perbandingan.`;
+}
+async function runCompareBhpPremi() {
+  const bhpFile = el.bhpCompareInput?.files?.[0];
+  const premiFile = el.premiCompareInput?.files?.[0];
+  if (!bhpFile || !premiFile) {
+    alert('Silakan pilih file BHP dan file Premi terlebih dahulu.');
+    return;
+  }
+  showLoading('Membandingkan data BHP dan Premi...');
+  try {
+    const [bhpText, premiText] = await Promise.all([readFileAsText(bhpFile), readFileAsText(premiFile)]);
+    const bhpParsed = parseBHPCompareText(bhpText, bhpFile.name);
+    const premiParsed = parsePremiCompareText(premiText, premiFile.name);
+    state.compareFiles = { bhp: bhpFile.name, premi: premiFile.name };
+    state.compareRawBhpRows = bhpParsed.rawRows;
+    state.compareRawPremiRows = premiParsed.rawRows;
+    state.compareRows = buildCompareRows(bhpParsed, premiParsed);
+    renderCompareResults();
+    if (el.btnDownloadCompare) el.btnDownloadCompare.disabled = !state.compareRows.length;
+    alert(`Perbandingan selesai. ${fmtInt(state.compareRows.length)} kombinasi Unit/Tanggal/NIP/Nama/Blok ditemukan.`);
+  } catch (err) {
+    console.error(err);
+    alert(`Gagal menghitung perbandingan: ${err.message || err}`);
+  } finally {
+    hideLoading();
+  }
+}
+function addCompareRowsToSheet(ws, rows, type) {
+  const isB = type === 'brondol';
+  ws.addRow(['Unit','Divisi','Tanggal','NIP','Nama','Blok','Data BHP','Data Premi','Selisih Data','Rp BHP','Rp Premi','Selisih Premi','Rate Premi']);
+  styleHeaderRow(ws.getRow(1));
+  for (const r of rows) {
+    const row = ws.addRow([
+      r.unit, r.divisi, r.dateDisplay, r.nip, r.nama, r.blok,
+      isB ? r.bhpBrondol : r.bhpJanjang,
+      isB ? r.premiBrondol : r.premiJanjang,
+      isB ? r.selisihBrondol : r.selisihJanjang,
+      isB ? r.bhpBrondolRp : r.bhpJanjangRp,
+      isB ? r.premiBrondolRp : r.premiJanjangRp,
+      isB ? r.selisihBrondolRp : r.selisihJanjangRp,
+      isB ? r.brondolRate : r.janjangRate
+    ]);
+    [7,8,9,10,11,12,13].forEach(c => row.getCell(c).numFmt = '#,##0.00');
+  }
+  autoFitColumns(ws, [12,10,12,12,28,12,14,14,14,16,16,16,14]);
+  styleDataBorders(ws);
+}
+
+function getCompareMonthInfo(rows) {
+  const dates = rows.map(r => String(r.dateISO || '')).filter(v => /^\d{4}-\d{2}-\d{2}$/.test(v)).sort();
+  const first = dates[0] || '';
+  const year = first ? Number(first.slice(0, 4)) : new Date().getFullYear();
+  const month = first ? Number(first.slice(5, 7)) : (new Date().getMonth() + 1);
+  return {
+    year,
+    month,
+    monthKey: `${year}-${String(month).padStart(2, '0')}`,
+    daysInMonth: new Date(year, month, 0).getDate(),
+    tag: `${String(year).slice(-2)}${String(month).padStart(2, '0')}`
+  };
+}
+function pinkDiffFill() {
+  return { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFFFD9E2' } };
+}
+function isNonZeroAmount(value) {
+  return Math.abs(Number(value || 0)) > 0.000001;
+}
+function addComparePremiumMatrixSheet(wb, rows, type) {
+  const isB = type === 'brondol';
+  const monthInfo = getCompareMonthInfo(rows);
+  const ws = wb.addWorksheet(isB ? 'Matrik Brondol' : 'Matrik Janjang', {
+    views: [{ state: 'frozen', xSplit: 4, ySplit: 2 }]
+  });
+  const dayCount = monthInfo.daysInMonth;
+  const totalCols = 4 + dayCount + 1;
+  const title = `${isB ? 'MATRIK BRONDOL' : 'MATRIK JANJANG'} ${monthInfo.tag}`;
+
+  ws.addRow([title]);
+  ws.mergeCells(1, 1, 1, totalCols);
+  const titleCell = ws.getCell(1, 1);
+  titleCell.font = { bold: true, color: { argb: 'FFFFFFFF' }, size: 12 };
+  titleCell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FF0F172A' } };
+  titleCell.alignment = { horizontal: 'center', vertical: 'middle' };
+  ws.getRow(1).height = 20;
+
+  const headers = ['Unit', 'Divisi', 'NIK', 'Nama'];
+  for (let d = 1; d <= dayCount; d++) headers.push(String(d));
+  headers.push('Total');
+  ws.addRow(headers);
+  styleHeaderRow(ws.getRow(2));
+
+  const groupMap = new Map();
+  for (const r of rows) {
+    if (!String(r.dateISO || '').startsWith(monthInfo.monthKey)) continue;
+    const key = [r.unit, r.divisi, r.nip, r.nama].map(v => normalizeCompareText(v).toUpperCase()).join('__');
+    if (!groupMap.has(key)) {
+      groupMap.set(key, {
+        unit: r.unit,
+        divisi: r.divisi,
+        nip: r.nip,
+        nama: r.nama,
+        values: Array(dayCount).fill(0)
+      });
+    }
+    const day = Number(String(r.dateISO).slice(8, 10));
+    const amount = isB ? r.selisihBrondolRp : r.selisihJanjangRp;
+    if (day >= 1 && day <= dayCount) groupMap.get(key).values[day - 1] += Number(amount || 0);
+  }
+
+  const matrixRows = Array.from(groupMap.values()).sort((a, b) =>
+    String(a.unit || '').localeCompare(String(b.unit || ''), 'id') ||
+    String(a.divisi || '').localeCompare(String(b.divisi || ''), 'id') ||
+    String(a.nama || '').localeCompare(String(b.nama || ''), 'id') ||
+    String(a.nip || '').localeCompare(String(b.nip || ''), 'id')
+  );
+
+  for (const item of matrixRows) {
+    const total = item.values.reduce((sum, v) => sum + Number(v || 0), 0);
+    const values = item.values.map(v => isNonZeroAmount(v) ? Number(v) : null);
+    const row = ws.addRow([item.unit, item.divisi, item.nip, item.nama, ...values, total]);
+    row.getCell(1).alignment = { horizontal: 'center' };
+    row.getCell(2).alignment = { horizontal: 'center' };
+    for (let c = 5; c <= totalCols; c++) {
+      const cell = row.getCell(c);
+      cell.numFmt = '#,##0.##';
+      cell.alignment = { horizontal: 'right' };
+      if (isNonZeroAmount(cell.value)) cell.fill = pinkDiffFill();
+    }
+  }
+
+  autoFitColumns(ws, [12, 8, 12, 28, ...Array(dayCount).fill(10), 14]);
+  ws.getColumn(4).alignment = { horizontal: 'left' };
+  ws.autoFilter = { from: { row: 2, column: 1 }, to: { row: 2, column: totalCols } };
+  ws.eachRow((row, rowNumber) => {
+    row.eachCell({ includeEmpty: true }, cell => {
+      cell.border = {
+        top: { style: 'thin', color: { argb: rowNumber <= 2 ? 'FFFFFFFF' : 'FFE2E8F0' } },
+        bottom: { style: 'thin', color: { argb: rowNumber <= 2 ? 'FFFFFFFF' : 'FFE2E8F0' } },
+        left: { style: 'thin', color: { argb: rowNumber <= 2 ? 'FFFFFFFF' : 'FFE2E8F0' } },
+        right: { style: 'thin', color: { argb: rowNumber <= 2 ? 'FFFFFFFF' : 'FFE2E8F0' } }
+      };
+    });
+  });
+  return ws;
+}
+async function downloadCompareWorkbook() {
+  const rows = state.compareFilteredRows.length ? state.compareFilteredRows : state.compareRows;
+  if (!rows.length) { alert('Belum ada hasil perbandingan untuk di-download.'); return; }
+  if (typeof ExcelJS === 'undefined') { alert('Library ExcelJS tidak berhasil dimuat.'); return; }
+  showLoading('Membuat file Excel perbandingan...');
+  try {
+    const wb = new ExcelJS.Workbook();
+    wb.creator = 'ChatGPT'; wb.created = new Date();
+    const wsSummary = wb.addWorksheet('Ringkasan');
+    wsSummary.addRow(['PERBANDINGAN DATA BHP VS PREMI']);
+    wsSummary.mergeCells(1,1,1,6);
+    wsSummary.getCell(1,1).font = { bold: true, size: 16, color: { argb: 'FFFFFFFF' } };
+    wsSummary.getCell(1,1).fill = { type:'pattern', pattern:'solid', fgColor:{argb:'FF0F172A'} };
+    wsSummary.getCell(1,1).alignment = { horizontal:'center' };
+    wsSummary.addRow(['File BHP', state.compareFiles.bhp || '', '', 'File Premi', state.compareFiles.premi || '']);
+    const sum = rows.reduce((a,r)=>{ a.bhpBrondol+=r.bhpBrondol; a.premiBrondol+=r.premiBrondol; a.bhpJanjang+=r.bhpJanjang; a.premiJanjang+=r.premiJanjang; a.bhpRp+=r.totalBhpRp; a.premiRp+=r.totalPremiRp; return a;}, {bhpBrondol:0,premiBrondol:0,bhpJanjang:0,premiJanjang:0,bhpRp:0,premiRp:0});
+    wsSummary.addRow([]);
+    wsSummary.addRow(['Item','BHP','Premi','Selisih']);
+    styleHeaderRow(wsSummary.getRow(4));
+    wsSummary.addRow(['Brondol', sum.bhpBrondol, sum.premiBrondol, sum.bhpBrondol-sum.premiBrondol]);
+    wsSummary.addRow(['Janjang', sum.bhpJanjang, sum.premiJanjang, sum.bhpJanjang-sum.premiJanjang]);
+    wsSummary.addRow(['Rupiah', sum.bhpRp, sum.premiRp, sum.bhpRp-sum.premiRp]);
+    for (let r = 5; r <= 7; r++) for (let c = 2; c <= 4; c++) wsSummary.getRow(r).getCell(c).numFmt = '#,##0.00';
+    autoFitColumns(wsSummary, [18,18,18,18,18,18]);
+    styleDataBorders(wsSummary);
+
+    // Urutan sheet: Ringkasan; Matrik Brondol; Rekap Brondol; Matrik Janjang; Rekap Janjang; Detail BHP; Detail Premi; Detail Gabungan.
+    // Sheet matrik berisi akumulasi Selisih Premi per Unit/Divisi/NIK/Nama per tanggal.
+    // Nilai yang memiliki selisih diberi arsiran pink, sedangkan nilai nol dibiarkan kosong/tanpa arsiran.
+    addComparePremiumMatrixSheet(wb, rows, 'brondol');
+    addCompareRowsToSheet(wb.addWorksheet('Rekap Brondol', { views: [{ state:'frozen', ySplit:1 }] }), rows, 'brondol');
+    addComparePremiumMatrixSheet(wb, rows, 'janjang');
+    addCompareRowsToSheet(wb.addWorksheet('Rekap Janjang', { views: [{ state:'frozen', ySplit:1 }] }), rows, 'janjang');
+
+    const wsBhp = wb.addWorksheet('Detail BHP', { views: [{ state:'frozen', ySplit:1 }] });
+    wsBhp.addRow(['Unit','Divisi','File','Tanggal','NIP','Nama','Blok','KG Brondol','Janjang Netto','% Brondol Aktual','% Brondol Perhitungan']);
+    styleHeaderRow(wsBhp.getRow(1));
+    state.compareRawBhpRows.forEach(r => wsBhp.addRow([r.unit,r.divisi,r.fileName,r.dateDisplay,r.nip,r.nama,r.blok,r.kgBrondol,r.janjangNetto,r.pctAktual,r.pctHitung]));
+    autoFitColumns(wsBhp, [12,10,18,12,12,28,12,14,14,16,20]); styleDataBorders(wsBhp);
+
+    const wsPremi = wb.addWorksheet('Detail Premi', { views: [{ state:'frozen', ySplit:1 }] });
+    wsPremi.addRow(['Unit','Divisi','File','Tanggal','NIP','Nama','Blok','Jenis','Quantity','Quantity (Jjg)','Rp Total Premi']);
+    styleHeaderRow(wsPremi.getRow(1));
+    state.compareRawPremiRows.forEach(r => wsPremi.addRow([r.unit,r.divisi,r.fileName,r.dateDisplay,r.nip,r.nama,r.blok,r.jenis,r.quantity,r.quantityJjg,r.rpTotal]));
+    autoFitColumns(wsPremi, [12,10,18,12,12,28,12,12,14,14,16]); styleDataBorders(wsPremi);
+
+    const wsDetail = wb.addWorksheet('Detail Gabungan', { views: [{ state:'frozen', ySplit:1 }] });
+    wsDetail.addRow(['Unit','Divisi','Tanggal','NIP','Nama','Blok','BHP Brondol','Premi Brondol','Selisih Brondol','BHP Janjang','Premi Janjang','Selisih Janjang','% Brondol Aktual','% Brondol Perhitungan','Rp BHP','Rp Premi','Selisih Rp','Total Selisih Data']);
+    styleHeaderRow(wsDetail.getRow(1));
+    rows.forEach(r => {
+      const row = wsDetail.addRow([r.unit,r.divisi,r.dateDisplay,r.nip,r.nama,r.blok,r.bhpBrondol,r.premiBrondol,r.selisihBrondol,r.bhpJanjang,r.premiJanjang,r.selisihJanjang,r.pctAktualAvg,r.pctHitungAvg,r.totalBhpRp,r.totalPremiRp,r.totalSelisihRp,r.totalSelisihData]);
+      for (let c=7;c<=18;c++) row.getCell(c).numFmt = '#,##0.00';
+    });
+    autoFitColumns(wsDetail, [12,10,12,12,28,12,14,14,14,14,14,14,14,16,16,16,16,16]);
+    styleDataBorders(wsDetail);
+
+    const buffer = await wb.xlsx.writeBuffer();
+    const blob = new Blob([buffer], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' });
+    const a = document.createElement('a');
+    const now = new Date();
+    const stamp = `${now.getFullYear()}${String(now.getMonth()+1).padStart(2,'0')}${String(now.getDate()).padStart(2,'0')}_${String(now.getHours()).padStart(2,'0')}${String(now.getMinutes()).padStart(2,'0')}`;
+    a.href = URL.createObjectURL(blob);
+    a.download = `perbandingan_bhp_premi_${stamp}.xlsx`;
+    document.body.appendChild(a); a.click();
+    setTimeout(() => { URL.revokeObjectURL(a.href); a.remove(); }, 1000);
+  } catch (err) {
+    console.error(err);
+    alert(`Gagal membuat file Excel perbandingan: ${err.message || err}`);
+  } finally {
+    hideLoading();
+  }
+}
+
 function wireEvents() {
   el.fileInput.addEventListener('change', () => {
     const files = Array.from(el.fileInput.files || []);
@@ -1079,7 +1608,19 @@ function wireEvents() {
     applyFilters();
   });
   el.searchInput.addEventListener('input', () => applyFilters());
+  if (el.bhpCompareInput) el.bhpCompareInput.addEventListener('change', () => {
+    const f = el.bhpCompareInput.files?.[0];
+    el.bhpCompareInfo.textContent = f ? `${f.name} (${fmtInt(f.size)} byte)` : 'Belum ada file BHP dipilih.';
+  });
+  if (el.premiCompareInput) el.premiCompareInput.addEventListener('change', () => {
+    const f = el.premiCompareInput.files?.[0];
+    el.premiCompareInfo.textContent = f ? `${f.name} (${fmtInt(f.size)} byte)` : 'Belum ada file Premi dipilih.';
+  });
+  if (el.btnRunCompare) el.btnRunCompare.addEventListener('click', runCompareBhpPremi);
+  if (el.btnDownloadCompare) el.btnDownloadCompare.addEventListener('click', downloadCompareWorkbook);
+  if (el.compareSearchInput) el.compareSearchInput.addEventListener('input', renderCompareResults);
 }
+
 
 async function boot() {
   showLoading('Memulai aplikasi...');

@@ -45,3 +45,61 @@ Saat pertama kali dibuka, koneksi internet dibutuhkan agar library termuat denga
 - Rata-rata absensi tetap menghitung skor 0 sebagai tidak hadir pada hari kerja Senin-Sabtu setelah pekerja mulai memiliki data/aktivitas pertama.
 - Skor absensi 0 sebelum tanggal aktif pertama pekerja tidak ikut menjadi pembagi.
 - Tampilan matriks harian tetap menampilkan angka 0 agar tanggal tanpa aktivitas tetap terlihat, tetapi kolom Rerata memakai aturan pembagi baru di atas.
+
+UPDATE 09-05-2026 - HALAMAN PERBANDINGAN BHP VS PREMI
+------------------------------------------------------
+1. Ditambahkan halaman baru "Perbandingan BHP vs Premi" pada index.html.
+2. Upload 2 file sekaligus:
+   - Data BHP / Input Hasil Panen
+   - Data Premi
+3. Kunci pembanding:
+   Unit + Tanggal + NIP + Nama + Blok.
+4. Mapping data:
+   - BHP Brondol = KG Brondol
+   - BHP Janjang = Janjang Netto
+   - Premi Brondol = Quantity jika Quantity (Jjg) = 0
+   - Premi Janjang = Quantity (Jjg) jika Quantity (Jjg) > 0
+   - Rp Premi = Rp. Total Premi
+5. Estimasi Rp BHP dihitung dengan rate premi aktual pada data Premi:
+   - Rate Brondol = Rp Premi Brondol / Qty Premi Brondol
+   - Rate Janjang = Rp Premi Janjang / Qty Premi Janjang
+   - Rp BHP = Qty BHP x Rate Premi
+6. Hasil dapat di-download ke Excel berisi sheet:
+   - Ringkasan
+   - Matrik Brondol
+   - Matrik Janjang
+   - Detail Gabungan
+   - Detail BHP
+   - Detail Premi
+
+UPDATE 09-05-2026 - MATRIK SELISIH PREMI HARIAN
+-------------------------------------------------
+1. Download Excel perbandingan sekarang ditambahkan sheet:
+   - Matrik Brondol
+   - Matrik Janjang
+2. Sheet matrik menampilkan akumulasi Selisih Premi per Div/Unit, NIK, Nama, dan tanggal 1 s.d. akhir bulan.
+3. Kolom paling kanan berisi Total Selisih Premi per pekerja.
+4. Nilai yang memiliki selisih diberi arsiran warna pink.
+5. Nilai nol/tidak ada selisih dibiarkan kosong dan tidak diberi arsiran agar mudah dibaca.
+
+UPDATE 09-05-2026 - PERBAIKAN UNIT, DIVISI, DAN URUTAN SHEET
+--------------------------------------------------------------
+1. Kolom Divisi ditambahkan pada sheet export perbandingan.
+2. Data Divisi BHP diambil dari kolom Kemandoran:
+   - 11 = Divisi 1
+   - 12 = Divisi 2
+   - 13 = Divisi 3
+   - 14 = Divisi 4
+   - dan seterusnya.
+3. Data Divisi Premi diambil langsung dari kolom Divisi pada file Premi.
+4. Sheet matrik sekarang memakai urutan kolom awal: Unit, Divisi, NIK, Nama.
+5. Sheet rekap dan detail sekarang memakai kolom awal: Unit, Divisi, lalu kolom lain.
+6. Urutan sheet export Excel perbandingan menjadi:
+   - Ringkasan
+   - Matrik Brondol
+   - Rekap Brondol
+   - Matrik Janjang
+   - Rekap Janjang
+   - Detail BHP
+   - Detail Premi
+   - Detail Gabungan
